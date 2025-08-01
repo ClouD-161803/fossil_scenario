@@ -456,6 +456,13 @@ class SingleScenApp:
         #else:
         ctrl = ""
         print(f"Found a valid {self.config.CERTIFICATE.name} certificate" + ctrl)
+
+        try:
+            comp_size = len(state.get("supps", []))
+        except Exception:
+            comp_size = 0
+        total = self.config.N_DATA
+        print(f"Compression set size: {comp_size}/{total}")
         stop = True
         return stop
 
