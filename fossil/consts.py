@@ -7,7 +7,7 @@
 import math
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import Any, Optional
 
 import torch
 import numpy as np
@@ -152,6 +152,12 @@ class CertificateType(Enum):
         elif certificate_type == CertificateType.RAR:
             domains = [dn.XD, dn.XI, dn.XS, dn.XS_BORDER, dn.XG, dn.XF]
             data = [dn.XD, dn.XI, dn.XU, dn.XG, dn.XF, dn.XNF]
+        else:
+            domains = []
+            data = []
+            raise ValueError(
+                f"Certificate type {certificate_type} not recognized."
+            )
         return domains, data
 
     @classmethod
@@ -175,8 +181,9 @@ class CertificateType(Enum):
 class ScenAppConfig:
     SYSTEM: Any = None
     CERTIFICATE: CertificateType = CertificateType.LYAPUNOV
-    DOMAINS: dict[str, Any] = None
-    DATA: dict[str : torch.Tensor] = None
+    DOMAINS: dict[str, Any] | None = None
+    # DATA can be arbitrary nested dicts of tensors or other structures
+    DATA: dict[str, Any] | None = None
     SYMMETRIC_BELT: bool = False
     SCENAPP_MAX_ITERS: int = 10
     SCENAPP_MAX_TIME_S: float = math.inf  # in sec
@@ -189,11 +196,11 @@ class ScenAppConfig:
     #TRANSLATOR: TranslatorType = TranslatorType.CONTINUOUS
     N_DATA: int = 500
     N_TEST_DATA: int = 5000
-    BETA: float = 1e-5,
+    BETA: float = 1e-5
     EPS: float = 0.1
     LEARNING_RATE: float = 0.01
     SUPPORT_TOL: float = 1e-1
-    FACTORS: Literal = LearningFactors.NONE
+    FACTORS: LearningFactors = LearningFactors.NONE
     LLO: bool = False  # last layer of ones
     ROUNDING: int = 3
     N_VARS: int = 0
@@ -201,8 +208,8 @@ class ScenAppConfig:
     ACTIVATION: tuple[ActivationType, ...] = (ActivationType.SQUARE,)
     VERBOSE: int = 0
     ENET: Any = None
-    CTRLAYER: tuple[int] = None  # not None means control certificate
-    CTRLACTIVATION: tuple[ActivationType, ...] = None
+    CTRLAYER: tuple[int, ...] | None = None  # not None means control certificate
+    CTRLACTIVATION: tuple[ActivationType, ...] | None = None
     N_HIDDEN_NEURONS_ALT: tuple[int] = (10,)  # For DoubleCegis
     ACTIVATION_ALT: tuple[ActivationType, ...] = (
         ActivationType.SQUARE,
