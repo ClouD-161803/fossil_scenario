@@ -12,6 +12,14 @@ from fossil.consts import (
     VerifierType,
 )
 from multiprocessing import Pool
+import random
+import numpy as np
+import torch
+
+claudio_seed = 42
+random.seed(claudio_seed)
+np.random.seed(claudio_seed)
+torch.manual_seed(claudio_seed)
 
 
 def solve(opts):
@@ -70,6 +78,7 @@ def test_lnn(args):
         VERBOSE=0,
         SCENAPP_MAX_ITERS=2500,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
+        SEED=claudio_seed,
     ) for datum in data]
     with Pool(processes=num_runs) as pool:
         res = pool.map(solve, opts)
