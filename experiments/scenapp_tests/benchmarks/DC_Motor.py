@@ -67,9 +67,9 @@ def test_lnn(args):
         N_VARS=2,
         SYSTEM=system,
         DOMAINS=sets,
-        DATA=datum,  # type: ignore[arg-type]
+        DATA=datum,
         N_DATA=n_trajectory_data,
-        BETA=(0.01,), # type: ignore
+        BETA=(0.01,),
         CERTIFICATE=CertificateType.BARRIERALT,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         ACTIVATION=tuple(activations),

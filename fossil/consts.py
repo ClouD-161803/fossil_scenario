@@ -7,7 +7,7 @@
 import math
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import torch
 import numpy as np
@@ -196,7 +196,7 @@ class ScenAppConfig:
     #TRANSLATOR: TranslatorType = TranslatorType.CONTINUOUS
     N_DATA: int = 500
     N_TEST_DATA: int = 5000
-    BETA: float = 1e-5
+    BETA: Sequence[float] = (1e-5,)
     EPS: float = 0.1
     LEARNING_RATE: float = 0.01
     SUPPORT_TOL: float = 1e-1
@@ -216,6 +216,10 @@ class ScenAppConfig:
     )  # For DoubleCegis
     SEED: int = 0
     CUSTOM_CERTIFICATE: Any = None
+
+    def __post_init__(self):
+        if isinstance(self.BETA, float):
+            self.BETA = (self.BETA,)
 
     def __getitem__(self, item):
         return getattr(self, item)
