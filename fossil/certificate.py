@@ -539,6 +539,7 @@ class BarrierAlt(Certificate):
     """
 
     def __init__(self, domains, config: ScenAppConfig) -> None:
+        # Line 1: Function A(θ, D) -- θ is the parameter vector, D is the dataset
         self.domain = domains[XD]
         self.initial_s = domains[XI]
         self.unsafe_s = domains[XU]
@@ -547,6 +548,7 @@ class BarrierAlt(Certificate):
         self.T=config.SYSTEM.time_horizon
 
     def compute_state_loss(
+        # Line 4: l^s(θ) > 0 -- sample-independent state loss
         self,
         B_i: torch.Tensor,
         B_u: torch.Tensor,
@@ -565,6 +567,7 @@ class BarrierAlt(Certificate):
 
 
     def compute_loss(
+        # Line 11: L(θ, ξ) -- sample-dependent loss for each sample ξ
         self,
         B_i: torch.Tensor,
         B_u: torch.Tensor,
@@ -587,6 +590,8 @@ class BarrierAlt(Certificate):
             tuple[torch.Tensor, float]: loss and accuracy
         """
         torch.set_num_threads(8)
+        # Line 6: g ← ∇_θ l^s(θ) -- gradient of state loss
+        # Line 7: θ ← θ - αg -- step in direction of state loss gradient
         learn_accuracy = (B_i <= 0).count_nonzero().item() + (
             B_u > 0
         ).count_nonzero().item()
@@ -607,7 +612,7 @@ class BarrierAlt(Certificate):
         if psi_s > 0:
             lie_loss = relu(lie_loss)
         
-            
+        # Line 12: Find samples with loss greater than compression set loss
         supp_max = torch.tensor([-1.0])
         lie_losses = {}
         #lie_max = lie_loss.max() 
@@ -625,6 +630,7 @@ class BarrierAlt(Certificate):
         supp_loss = supp_max
 
         if supp_loss != -1:
+            # Line 13: Subgradients of loss for samples in M
             for i, elem in enumerate(indices["lie"]):
                 elem_lie_loss = lie_loss[elem].max()
                 if elem_lie_loss >= supp_max:
@@ -634,8 +640,10 @@ class BarrierAlt(Certificate):
                 #    break
             
             supp_loss = supp_max
+            # Line 16: losses = {k: lie_losses[k]+ψ_s for k in lie_losses}
             losses = {k: lie_losses[k]+psi_s for k in lie_losses} 
         else:
+            # Line 18: If no sample exceeds compression set, use max loss
             lie_max = lie_loss.max()
             ind_lie_max = lie_loss.argmax()
             
@@ -655,6 +663,7 @@ class BarrierAlt(Certificate):
         return losses, supp_loss, accuracy
     
     def learn(
+        # Algorithm 2, Line 1: Fix {ξ^i}_{i=1}^N
         self,
         learner: learner.LearnerNN,
         optimizer: Optimizer,
@@ -691,14 +700,14 @@ class BarrierAlt(Certificate):
         states_only = torch.cat([samples[idot1:i1], samples[i1+idot2:i1+i2], samples[i1+i2+idot3:]])
         times = torch.cat([times[label] for label in label_order if type(times[label]) is not list])
         samples_dot = torch.cat([Sdot[label] for label in label_order if type(Sdot[label]) is not list])
-        supp_samples = set()
+        supp_samples = set() # Line 3: C ← ∅
         state_sol = False
         prev_supp_loss = -1000
         best_supp_defd = False
         for t in range(learn_loops):
             optimizer.zero_grad()
 
-
+            # Line 4: While l^s(θ) > 0
             B, Bdot, _ = learner.get_all(samples_with_nexts, samples_dot, times)
             
             B2 = learner(states_only)
@@ -712,6 +721,7 @@ class BarrierAlt(Certificate):
             B_i = B2[i1-idot1:i1+i2-idot2-idot1]
             B_u = B2[i1+i2-idot1-idot2:]
             if state_sol:
+                # Line 11: Compute sample-dependent loss for all samples
                 losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, Bdot_d, Sind, supp_samples)
 
                 sorted_keys = sorted(losses, key=losses.get, reverse=True)
@@ -726,10 +736,12 @@ class BarrierAlt(Certificate):
                         best_loss = supp_loss
                         best_net = copy.deepcopy(learner)
                     optimizer.zero_grad()
+                    # Line 17: If (supp_loss - best_loss) >= η, add new sample to C
                     if (supp_loss-best_loss) >= 1e-1: 
                         if sorted_keys[0] in supp_samples:
                             break
                         else:
+                            # Line 19: C ← C ∪ {ξ̄}
                             supp_samples = supp_samples.union(set([sorted_keys[0]]))
                             max_loss.backward()
                         
@@ -743,34 +755,29 @@ class BarrierAlt(Certificate):
                         new_supp = False
                         max_loss.backward(retain_graph=True)
                         supp_grads = torch.hstack([torch.flatten(param.grad) for param in learner.parameters()])
-                        #inners = grads@supp_grads
-                        #misaligneds = (inners <= 0).nonzero()
-                        #if len(misaligneds) > 0:
-                        #    max_sample = sorted_keys[misaligneds[0]]
-                        #    supp_samples = supp_samples.union(set([max_sample]))
-                        #    optimizer.zero_grad()
-                        #    losses[max_sample].backward()
+                        # Line 15: If there is a misaligned subgradient (inner ≤ 0)
                         for k in sorted_keys:
                             optimizer.zero_grad()
                             losses[k].backward(retain_graph=True)
                             grad = torch.hstack([torch.flatten(param.grad) for param in learner.parameters()])
                             inner = torch.inner(grad, supp_grads)
-                            #if torch.abs(supp_loss-prev_supp_loss) < 1e-10: #convergence of support loss check
                             if inner <= 0:
                                 new_supp = True
+                                # Line 19: C ← C ∪ {ξ̄}
                                 supp_samples = supp_samples.union(set([k]))
                                 break
                         if not new_supp:
                             optimizer.zero_grad()
                             supp_loss.backward()
                 else:
+                    # Line 19: C ← C ∪ {ξ̄}
                     supp_samples = supp_samples.union(set([sorted_keys[0]]))
                     optimizer.zero_grad()
                     max_loss.backward()
                 prev_supp_loss = supp_loss
-                #prev_loss = max_loss.item()
                 optimizer.step()
             else:
+                # Lines 4-9: While l^s(θ) > 0, minimize state loss
                 state_itt = 0
                 while True:
                     optimizer.zero_grad()
@@ -795,11 +802,10 @@ class BarrierAlt(Certificate):
                         if state_itt % 100 == 0:
                             loss_v = loss.item() if hasattr(loss, "item") else loss
                             cert_log.debug("{} - loss: {:.5f}".format(state_itt, loss_v))
-                            
                         loss.backward()
                         optimizer.step()
 
-
+        # Line 25: After convergence, return θ, C_N = C ∪ argmax_{ξ∈D} L(θ, ξ)
         B, Bdot, _ = best_net.get_all(samples_with_nexts, samples_dot, times)
         B2 = best_net(states_only)
         (
