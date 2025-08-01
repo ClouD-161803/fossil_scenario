@@ -4,13 +4,21 @@ from fossil import domains
 from fossil import certificate
 from fossil import main
 from experiments.scenapp_tests.benchmarks import models
-from fossil.consts import *
+from fossil.consts import (
+    ActivationType,
+    ScenAppConfig,
+    CertificateType,
+    TimeDomain,
+    VerifierType,
+)
 from multiprocessing import Pool
+
 
 def solve(opts):
     PAC = ScenApp(opts)
     result = PAC.solve()
     return result
+
 
 def test_lnn(args):
     XD = domains.Rectangle((0.1, 0.1), (0.5, 1))
