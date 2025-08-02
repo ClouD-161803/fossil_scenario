@@ -555,22 +555,32 @@ class VerifierMarabou(Verifier):
         for cs in ({"lyap": (*V_tuple, *Vdot_tuple)},):
             yield cs
 
-class VerifierScenAppConvex(Component):
+class VerifierScenAppConvex(Verifier):
     @staticmethod
     def new_vars(n, base="x"):
         return [sp.symbols(base+str(i)) for i in range(n)]
     
-    def __init__(self, n_vars, beta, num_data, num_opt_vars, verbose):
-        super().__init__()
-        self.iter = -1
-        self.n = n_vars
-        self.n_opt = num_opt_vars
-        self.beta = beta[0]
-        self.num_data = num_data
-        self._solver_timeout = 300
-        self.verbose = verbose
-        self.optional_configs = VerifierConfig()
-        self._vars_bounds = [self.optional_configs.VARS_BOUNDS for _ in range(n_vars)]
+    def __init__(self, n_vars, constraints_method, solver_vars, verbose):
+        # Map the traditional parameters to ScenApp parameters
+        # constraints_method -> beta
+        # solver_vars -> num_data 
+        # verbose -> num_opt_vars (for ScenApp), verbose flag (for traditional)
+        
+        # Initialize base class with mapped parameters
+        super().__init__(n_vars, constraints_method, solver_vars, True)  # Default verbose=True for ScenApp
+        
+        # ScenApp-specific parameters
+        self.beta = constraints_method[0] if isinstance(constraints_method, (list, tuple)) else constraints_method
+        self.num_data = solver_vars if isinstance(solver_vars, int) else 1000
+        self.n_opt = verbose if isinstance(verbose, int) else 0
+        self._solver_timeout = 300  # ScenApp uses longer timeout
+        
+    @classmethod
+    def create_scenapp(cls, n_vars, beta, num_data, num_opt_vars, verbose=True):
+        """Factory method for creating ScenApp verifiers with the correct parameter order."""
+        instance = cls(n_vars, beta, num_data, num_opt_vars)
+        instance.verbose = verbose
+        return instance
 
     def calc_eps_risk_complexity(self, k):
         beta = self.beta
@@ -655,22 +665,32 @@ class VerifierScenAppConvex(Component):
     def get_timer():
         return T
 
-class VerifierScenAppNonConvex(Component):
+class VerifierScenAppNonConvex(Verifier):
     @staticmethod
     def new_vars(n, base="x"):
         return [sp.symbols(base+str(i)) for i in range(n)]
     
-    def __init__(self, n_vars, beta, num_data, num_opt_vars, verbose):
-        super().__init__()
-        self.iter = -1
-        self.n = n_vars
-        self.n_opt = num_opt_vars
-        self.beta = beta[0]
-        self.num_data = num_data
-        self._solver_timeout = 300
-        self.verbose = verbose
-        self.optional_configs = VerifierConfig()
-        self._vars_bounds = [self.optional_configs.VARS_BOUNDS for _ in range(n_vars)]
+    def __init__(self, n_vars, constraints_method, solver_vars, verbose):
+        # Map the traditional parameters to ScenApp parameters
+        # constraints_method -> beta
+        # solver_vars -> num_data 
+        # verbose -> num_opt_vars (for ScenApp), verbose flag (for traditional)
+        
+        # Initialize base class with mapped parameters
+        super().__init__(n_vars, constraints_method, solver_vars, True)  # Default verbose=True for ScenApp
+        
+        # ScenApp-specific parameters
+        self.beta = constraints_method[0] if isinstance(constraints_method, (list, tuple)) else constraints_method
+        self.num_data = solver_vars if isinstance(solver_vars, int) else 1000
+        self.n_opt = verbose if isinstance(verbose, int) else 0
+        self._solver_timeout = 300  # ScenApp uses longer timeout
+        
+    @classmethod
+    def create_scenapp(cls, n_vars, beta, num_data, num_opt_vars, verbose=True):
+        """Factory method for creating ScenApp verifiers with the correct parameter order."""
+        instance = cls(n_vars, beta, num_data, num_opt_vars)
+        instance.verbose = verbose
+        return instance
 
     def calc_eps_P2L(self, k):
         N = self.num_data
@@ -714,7 +734,7 @@ class VerifierScenAppNonConvex(Component):
         return T
 
 
-def get_verifier_type(verifier: Literal) -> Verifier:
+def get_verifier_type(verifier: VerifierType) -> type[Verifier]:
     if verifier == VerifierType.DREAL:
         return VerifierDReal
     elif verifier == VerifierType.Z3:
@@ -737,9 +757,22 @@ def get_verifier(verifier, n_vars, constraints_method, solver_vars, verbose):
         or verifier == VerifierZ3
         or verifier == VerifierCVC5
         or verifier == VerifierMarabou
-        or verifier == VerifierScenAppConvex
-        or verifier == VerifierScenAppNonConvex
     ):
         return verifier(n_vars, constraints_method, solver_vars, verbose)
+    elif verifier == VerifierScenAppConvex:
+        # ScenApp verifiers have different parameter semantics
+        # For compatibility, we use the factory method that handles proper parameter assignment
+        beta = constraints_method if isinstance(constraints_method, (list, tuple, int, float)) else [0.5]
+        num_data = solver_vars if isinstance(solver_vars, int) else 1000
+        num_opt_vars = verbose if isinstance(verbose, int) else 0
+        actual_verbose = True  # Default for ScenApp
+        return VerifierScenAppConvex.create_scenapp(n_vars, beta, num_data, num_opt_vars, actual_verbose)
+    elif verifier == VerifierScenAppNonConvex:
+        # ScenApp verifiers have different parameter semantics
+        beta = constraints_method if isinstance(constraints_method, (list, tuple, int, float)) else [0.5]
+        num_data = solver_vars if isinstance(solver_vars, int) else 1000
+        num_opt_vars = verbose if isinstance(verbose, int) else 0
+        actual_verbose = True  # Default for ScenApp
+        return VerifierScenAppNonConvex.create_scenapp(n_vars, beta, num_data, num_opt_vars, actual_verbose)
     else:
         raise ValueError("No verifier of type {}".format(verifier))

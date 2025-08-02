@@ -34,7 +34,7 @@ def test_lnn(args):
     XU = domains.Rectangle((0.45, 0.6), (0.5, 1))
 
     n_trajectory_data = 10
-    n_background_data = 1000
+    n_background_data = 50
     num_runs = 1
 
     sets = {

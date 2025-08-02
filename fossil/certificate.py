@@ -11,7 +11,7 @@ that the domains and data are as expected for a given certificate.
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Generator, Type, Any
+from typing import Generator, Type, Any, Union
 
 import torch
 import copy
@@ -84,8 +84,24 @@ class Certificate:
 
     bias = True
 
-    def __init__(self, domains: dict[str:Any]) -> None:
+    def __init__(self, domains: dict[str, Any], config: Union[ScenAppConfig, None] = None) -> None:
         pass
+
+    def get_violations(self, cert, cert_deriv, states, derivs, times, state_data):
+        """
+        Get violations for this certificate type.
+        This is a default implementation that returns no violations.
+        Subclasses should override this method to provide specific violation detection.
+        """
+        return 0, 0
+
+    def estimate_beta(self, learner):
+        """
+        Estimate beta parameter for this certificate type.
+        This is a default implementation that returns None.
+        Subclasses should override this method to provide specific beta estimation.
+        """
+        return None
 
     def learn(
         self,

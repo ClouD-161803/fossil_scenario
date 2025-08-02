@@ -37,6 +37,10 @@ class SingleScenApp:
         self.config = config
         
         self.x, self.x_map, self.domains = self._initialise_domains()
+        if self.config.DOMAINS is None:
+            self.config.DOMAINS = {}
+        if not self.config.DATA:
+            raise ValueError("No data provided in config")
         self.S, self.S_traj = self._initialise_data(self.config.DATA["full_data"], self.config.DATA["states_only"]) # Needs editing
         self.certificate = self._initialise_certificate()
         self.learner = self._initialise_learner()
@@ -50,6 +54,9 @@ class SingleScenApp:
             logger.Logger.set_logger_level(self.config.VERBOSE)
     
     def _initialise_domains(self):
+        if self.config.DOMAINS is None:
+            self.config.DOMAINS = {}
+            
         x = verifier.get_verifier_type(self.config.VERIFIER).new_vars(
             self.config.N_VARS
             )
@@ -60,7 +67,7 @@ class SingleScenApp:
                     else domain.generate_domain(x)
                     for label, domain in self.config.DOMAINS.items()
                   }
-        if self.config.CERTIFICATE == CertificateType.RAR:
+        if self.config.CERTIFICATE == CertificateType.RAR and self.config.DOMAINS is not None and certificate.XF in self.config.DOMAINS:
             domains[certificate.XNF] = self.config.DOMAINS[
                                         certificate.XF
                                                 ].generate_complement(x)
@@ -100,7 +107,6 @@ class SingleScenApp:
                     self.config.BETA,
                     self.config.N_DATA,
                     num_params,
-                    self.config.VERBOSE,
                             )
         return verifier_instance
 
@@ -119,34 +125,36 @@ class SingleScenApp:
             curr_ind += elem_len
 
         domained_data = {"states":{},"times":{},"derivs":{}, "indices":{}}
-        for key in self.config.DOMAINS:
-            domain = self.config.DOMAINS[key]
-            domained_data["states"][key] = []
-            domained_data["derivs"][key] = []
-            domained_data["times"][key] = []
-            domained_data["indices"][key] = [[] for elem in traj_inds]
-            curr_ind = 0
-            for ind, elem in enumerate(lumped_data["states"].T):
-                if domain.check_containment(elem.expand([1,elem.size(dim=0)])):
-                    for i, index in enumerate(traj_inds):
-                        if ind in range(*index):
-                            sample_ind = i
-                            break
-                    domained_data["indices"][key][sample_ind].append(curr_ind)
-                    curr_ind += 1
-                    domained_data["states"][key].append(lumped_data["states"][:,ind])
-                    domained_data["derivs"][key].append(lumped_data["derivs"][:,ind])
-                    domained_data["times"][key].append(lumped_data["times"][ind])
-                    
-            if len(domained_data["states"][key]) > 0:
-                if key in state_data:
-                    domained_data["states"][key] = torch.cat((torch.stack(domained_data["states"][key]), state_data[key]))
+        if self.config.DOMAINS is not None:
+            for key in self.config.DOMAINS:
+                domain = self.config.DOMAINS[key]
+                domained_data["states"][key] = []
+                domained_data["derivs"][key] = []
+                domained_data["times"][key] = []
+                domained_data["indices"][key] = [[] for elem in traj_inds]
+                curr_ind = 0
+                for ind, elem in enumerate(lumped_data["states"].T):
+                    if domain.check_containment(elem.expand([1,elem.size(dim=0)])):
+                        sample_ind = 0  # Initialize with default value
+                        for i, index in enumerate(traj_inds):
+                            if ind in range(*index):
+                                sample_ind = i
+                                break
+                        domained_data["indices"][key][sample_ind].append(curr_ind)
+                        curr_ind += 1
+                        domained_data["states"][key].append(lumped_data["states"][:,ind])
+                        domained_data["derivs"][key].append(lumped_data["derivs"][:,ind])
+                        domained_data["times"][key].append(lumped_data["times"][ind])
+                        
+                if len(domained_data["states"][key]) > 0:
+                    if key in state_data:
+                        domained_data["states"][key] = torch.cat((torch.stack(domained_data["states"][key]), state_data[key]))
+                    else:
+                        domained_data["states"][key] = torch.stack(domained_data["states"][key])
+                    domained_data["derivs"][key] = torch.stack(domained_data["derivs"][key])
+                    domained_data["times"][key] = torch.stack(domained_data["times"][key])
                 else:
-                    domained_data["states"][key] = torch.stack(domained_data["states"][key])
-                domained_data["derivs"][key] = torch.stack(domained_data["derivs"][key])
-                domained_data["times"][key] = torch.stack(domained_data["times"][key])
-            else:
-                domained_data["states"][key] = state_data[key]
+                    domained_data["states"][key] = state_data[key]
         
         return domained_data, traj_data
 
@@ -163,12 +171,20 @@ class SingleScenApp:
         return state 
 
     def a_post_verify(self, cert, cert_deriv, n_data):
+        if not self.config.DATA:
+            raise ValueError("No data provided in config")
         state_data = self.config.DATA["states_only"]
         torch.manual_seed(clock_gettime(0))      #allows different samples when running in parallel
         try:
-            test_data = self.config.DOMAINS["init"]._generate_data(n_data)()
+            if self.config.DOMAINS is not None and "init" in self.config.DOMAINS:
+                test_data = self.config.DOMAINS["init"]._generate_data(n_data)()
+            else:
+                raise KeyError("init domain not found")
         except KeyError:
-            test_data = self.config.DOMAINS["lie"]._generate_data(n_data)()
+            if self.config.DOMAINS is not None and "lie" in self.config.DOMAINS:
+                test_data = self.config.DOMAINS["lie"]._generate_data(n_data)()
+            else:
+                raise ValueError("Neither 'init' nor 'lie' domains are available")
 
         all_test_data = self.config.SYSTEM().generate_trajs(test_data)
         data = {"states_only": None, "full_data": {"times":all_test_data[0],"states":all_test_data[1],"derivs":all_test_data[2]}}
@@ -191,6 +207,8 @@ class SingleScenApp:
         # Could discard just the current worst case for better guarantees but worse performance
         # Could probably do this by just discarding last support sample...
         
+        if not self.config.DATA:
+            raise ValueError("No data provided in config")
         traj_data = self.config.DATA["full_data"]
         if not self.config.CONVEX_NET:
             if len(state["discarded"]) == 0:
@@ -231,6 +249,9 @@ class SingleScenApp:
         next_data = np.hstack(state[ScenAppStateKeys.S_traj_dot])
         times = np.hstack(self.S_traj["times"])
 
+        if self.config.DOMAINS is None or "lie" not in self.config.DOMAINS:
+            raise ValueError("DOMAINS or 'lie' domain not available for gap estimation")
+        
         valid_inds = torch.where(self.config.DOMAINS["lie"].check_containment(torch.Tensor(state_data.T)))
         state_data = state_data[:,valid_inds[0]]
         next_data = next_data[:,valid_inds[0]]
@@ -456,13 +477,6 @@ class SingleScenApp:
         #else:
         ctrl = ""
         print(f"Found a valid {self.config.CERTIFICATE.name} certificate" + ctrl)
-
-        try:
-            comp_size = len(state.get("supps", []))
-        except Exception:
-            comp_size = 0
-        total = self.config.N_DATA
-        print(f"Compression set size: {comp_size}/{total}")
         stop = True
         return stop
 
@@ -543,7 +557,6 @@ class DoubleScenApp(SingleScenApp):
                     self.config.BETA,
                     self.config.N_DATA,
                     num_params,
-                    self.config.VERBOSE,
                             )
         return verifier_instance
 
