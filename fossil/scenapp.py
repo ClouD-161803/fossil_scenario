@@ -170,7 +170,25 @@ class SingleScenApp:
         scenapp_log.debug("Updating controller does nothing")
         return state 
 
+
     def a_post_verify(self, cert, cert_deriv, n_data):
+        """
+        Perform a posteriori verification of the certificate on new test data.
+
+        This function generates new test trajectories from the 'init' or 'lie' domain, evaluates the certificate on them,
+        and computes the scenario approach risk bound (epsilon) based on the observed violations.
+
+        Args:
+            cert: The trained certificate neural network or function.
+            cert_deriv: The derivative of the certificate (e.g., neural network gradient).
+            n_data (int): Number of test samples to generate for verification.
+
+        Returns:
+            float: The computed scenario approach risk bound (epsilon).
+
+        Raises:
+            ValueError: If no data is provided in the config or required domains are missing.
+        """
         if not self.config.DATA:
             raise ValueError("No data provided in config")
         state_data = self.config.DATA["states_only"]
@@ -206,18 +224,31 @@ class SingleScenApp:
 
 
     def discard(self, state):
-        
+        """
+        Discard support samples from the current dataset and update the scenario state.
+
+        This function removes samples that were identified as support points in the last iteration from the working dataset.
+        It updates the indices and data structures accordingly, preparing the state for the next iteration of the scenario approach.
+
+        Args:
+            state (dict): The current state dictionary containing support and discarded sample indices, and other scenario state.
+
+        Returns:
+            None
+
+        Raises:
+            ValueError: If no data is provided in the config.
+        """
         # Discard all samples that were of support for last run...
         # Could discard just the current worst case for better guarantees but worse performance
         # Could probably do this by just discarding last support sample...
-        
         if not self.config.DATA:
             raise ValueError("No data provided in config")
         traj_data = self.config.DATA["full_data"]
         if not self.config.CONVEX_NET:
             if len(state["discarded"]) == 0:
                 state["discarded"] = state["supps"]
-                self.remaining_inds = list(set(range(len(traj_data["states"])))-state["discarded"])
+                self.remaining_inds = list(set(range(len(traj_data["states"]))) - state["discarded"])
             else:
                 to_remove = set()
                 for new_disc in state["supps"]:
@@ -227,24 +258,40 @@ class SingleScenApp:
                 if len(to_remove) == len(self.remaining_inds):
                     print("removed all samples, maintaining final support samples")
                     return
-                self.remaining_inds=list(set(self.remaining_inds)-to_remove)
+                self.remaining_inds = list(set(self.remaining_inds) - to_remove)
             state["supps"] = set()
         new_traj_inds = [i for i in range(len(traj_data["states"])) if i not in state["discarded"]]
         new_traj_data = {}
         for key in traj_data:
             new_traj_data[key] = [traj_data[key][ind] for ind in new_traj_inds]
-        
+
         self.S, self.S_traj = self._initialise_data(new_traj_data, self.config.DATA["states_only"]) # Needs editing
-        
+
         state[ScenAppStateKeys.S] = self.S["states"]
         state[ScenAppStateKeys.S_dot] = self.S["derivs"]
         state[ScenAppStateKeys.S_traj] = self.S_traj["states"]
-        state[ScenAppStateKeys.S_traj_dot] =  self.S_traj["derivs"]
-        state[ScenAppStateKeys.S_inds] =  self.S["indices"]
+        state[ScenAppStateKeys.S_traj_dot] = self.S_traj["derivs"]
+        state[ScenAppStateKeys.S_inds] = self.S["indices"]
         state[ScenAppStateKeys.times] = self.S["times"]
         return
 
     def est_disc_gap(self, state):
+        """
+        Estimate the discretization gap (delta) for the scenario approach.
+
+        This function computes an upper bound on the discretization error between the continuous and discrete-time systems
+        using sampled trajectory data. It samples pairs of nearby points in the state space and evaluates the difference
+        in their gradients and next states, fitting an exponential Weibull distribution to the results to estimate Lipschitz constants.
+
+        Args:
+            state (dict): The current state dictionary containing trajectory data, neural network, and other scenario approach state.
+
+        Returns:
+            float: The estimated discretization gap (delta).
+
+        Raises:
+            ValueError: If the required domains or sufficient data are not available for estimation.
+        """
         # Would be better off adding this to the loss function, but this works OK.
         # Adding to loss function would likely be quite slow...
 
@@ -321,6 +368,7 @@ class SingleScenApp:
 
     def solve(self) -> Result:
         converge_tol = 1e-4
+        print(f"[{self.__class__.__name__}] Problem type: {'Convex' if self.config.CONVEX_NET else 'Non-Convex'}, calc_disc_gap: {'enabled' if self.config.CALC_DISC_GAP else 'disabled'}")
         Sdot = self.S["derivs"]
         S = self.S["states"]
         S_inds = self.S["indices"]
@@ -357,7 +405,13 @@ class SingleScenApp:
 
                 outputs = self.verifier.get(**state)
                 state = {**state, **outputs}
-                print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
+                print(f"[{self.__class__.__name__}] Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+                if isinstance(state["supps"], dict):
+                    comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+                else:
+                    comp_size = len(state["supps"].union(state["discarded"]))
+                total_samples = self.config.N_DATA
+                print(f"[{self.__class__.__name__}] Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
                 stop = self.process_certificate(S, state, iters)
 
             elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
@@ -381,6 +435,12 @@ class SingleScenApp:
                         state = {**state, **outputs}
 
                         print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
+                        if isinstance(state["supps"], dict):
+                            comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+                        else:
+                            comp_size = len(state["supps"].union(state["discarded"]))
+                        total_samples = self.config.N_DATA
+                        print(f"Compression set size: {comp_size}/{total_samples}")
                         stop = self.process_certificate(S, state, iters)
 
                 else:
@@ -390,7 +450,13 @@ class SingleScenApp:
                     outputs = self.verifier.get(**state)
                     state = {**state, **outputs}
 
-                    print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
+                    print(f"[{self.__class__.__name__} without ] Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+                    if isinstance(state["supps"], dict):
+                        comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+                    else:
+                        comp_size = len(state["supps"].union(state["discarded"]))
+                    total_samples = self.config.N_DATA
+                    print(f"Compression set size: {comp_size}/{total_samples}")
                     stop = self.process_certificate(S, state, iters)
             
             elif state[ScenAppStateKeys.verification_timed_out]:
@@ -433,7 +499,7 @@ class SingleScenApp:
                 )
         pre_post = perf_counter()
         a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
-        print("Direct property guarantee time: {:.5f}s".format(perf_counter()-pre_post))
+        print(f"[{self.__class__.__name__}] Direct property guarantee time: {perf_counter()-pre_post:.5f}s")
         self._result = Result(state[ScenAppStateKeys.bounds], a_post_eps, state[ScenAppStateKeys.best_net], stats)
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result
@@ -632,6 +698,13 @@ class DoubleScenApp(SingleScenApp):
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
                 print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
+                # Compute and print compression set size
+                if isinstance(state["supps"], dict):
+                    comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+                else:
+                    comp_size = len(state["supps"].union(state["discarded"]))
+                total_samples = self.config.N_DATA
+                print(f"Compression set size: {comp_size}/{total_samples}")
                 stop = self.process_certificate(S, state, iters)
 
             elif not self.config.CONVEX_NET and state["best_loss"] == 0.0:
@@ -646,6 +719,13 @@ class DoubleScenApp(SingleScenApp):
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
                 print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
+                # Compute and print compression set size
+                if isinstance(state["supps"], dict):
+                    comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+                else:
+                    comp_size = len(state["supps"].union(state["discarded"]))
+                total_samples = self.config.N_DATA
+                print(f"Compression set size: {comp_size}/{total_samples}")
                 stop = self.process_certificate(S, state, iters)
 
             elif state[ScenAppStateKeys.verification_timed_out]:
