@@ -368,7 +368,7 @@ class SingleScenApp:
 
     def solve(self) -> Result:
         converge_tol = 1e-4
-        print(f"[{self.__class__.__name__}] Problem type: {'Convex' if self.config.CONVEX_NET else 'Non-Convex'}, calc_disc_gap: {'enabled' if self.config.CALC_DISC_GAP else 'disabled'}")
+        print(f"[{self.__class__.__name__}] Problem type: {'Convex' if self.config.CONVEX_NET else 'Non-Convex'}")
         Sdot = self.S["derivs"]
         S = self.S["states"]
         S_inds = self.S["indices"]
@@ -389,6 +389,7 @@ class SingleScenApp:
         else:
             state["supps"] = set()
         state["supp_len"] = self.a_priori_supps
+
         while not stop:
             scenapp_log.debug("\033[1m Learner \033[0m")
             outputs = self.learner.get(**state)
@@ -399,19 +400,19 @@ class SingleScenApp:
             else:
                 state["supps"] = state["supps"].union(outputs["new_supps"])
             state = self.update_controller(state)
-            if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:
-                scenapp_log.debug("\033[1m Verifier \033[0m")
-                
 
+            if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:
+                
+                scenapp_log.debug("\033[1m Verifier \033[0m")
                 outputs = self.verifier.get(**state)
                 state = {**state, **outputs}
-                print(f"[{self.__class__.__name__}] Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+                print(f"Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
                 if isinstance(state["supps"], dict):
                     comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
                 else:
                     comp_size = len(state["supps"].union(state["discarded"]))
                 total_samples = self.config.N_DATA
-                print(f"[{self.__class__.__name__}] Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
+                print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
                 stop = self.process_certificate(S, state, iters)
 
             elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
@@ -429,11 +430,8 @@ class SingleScenApp:
                         scenapp_log.info("Required delta: {:.5f}".format(delta))
                         scenapp_log.info("Best loss: {:.5f}".format(state["best_loss"]))
                         scenapp_log.debug("\033[1m Verifier \033[0m")
-                        
-
                         outputs = self.verifier.get(**state)
                         state = {**state, **outputs}
-
                         print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
                         if isinstance(state["supps"], dict):
                             comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
@@ -445,12 +443,9 @@ class SingleScenApp:
 
                 else:
                     scenapp_log.debug("\033[1m Verifier \033[0m")
-                    
-
                     outputs = self.verifier.get(**state)
                     state = {**state, **outputs}
-
-                    print(f"[{self.__class__.__name__} without ] Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+                    print(f"Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
                     if isinstance(state["supps"], dict):
                         comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
                     else:
@@ -499,7 +494,7 @@ class SingleScenApp:
                 )
         pre_post = perf_counter()
         a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
-        print(f"[{self.__class__.__name__}] Direct property guarantee time: {perf_counter()-pre_post:.5f}s")
+        print(f"Direct property guarantee time: {perf_counter()-pre_post:.5f}s")
         self._result = Result(state[ScenAppStateKeys.bounds], a_post_eps, state[ScenAppStateKeys.best_net], stats)
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result
@@ -535,7 +530,7 @@ class SingleScenApp:
                 self.learner.get_timer().sum,
                 self.verifier.get_timer().sum,
                 ]
-        print("Learner times: {}".format(self.learner.get_timer()))
+        # print("Learner times: {}".format(self.learner.get_timer()))
         scenapp_log.info("Verifier times: {}".format(self.verifier.get_timer()))
         return state
 
