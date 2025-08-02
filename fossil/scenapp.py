@@ -368,7 +368,7 @@ class SingleScenApp:
 
     def solve(self) -> Result:
         converge_tol = 1e-4
-        print(f"[{self.__class__.__name__}] Problem type: {'Convex' if self.config.CONVEX_NET else 'Non-Convex'}")
+        # print(f"[{self.__class__.__name__}] Problem type: {'Convex' if self.config.CONVEX_NET else 'Non-Convex'}")
         Sdot = self.S["derivs"]
         S = self.S["states"]
         S_inds = self.S["indices"]
