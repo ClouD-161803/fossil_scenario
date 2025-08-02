@@ -3,6 +3,7 @@ from fossil.scenapp import ScenApp, Result
 from fossil import domains
 from fossil import certificate
 from fossil import main
+from fossil import analysis
 from experiments.scenapp_tests.benchmarks import models
 from fossil.consts import (
     ActivationType,
@@ -33,8 +34,8 @@ def test_lnn(args):
     XI = domains.Rectangle((0.1, 0.1), (0.4, 0.55))
     XU = domains.Rectangle((0.45, 0.6), (0.5, 1))
 
-    n_trajectory_data = 10
-    n_background_data = 50
+    n_trajectory_data = 100
+    n_background_data = 500
     num_runs = 1
 
     sets = {
@@ -91,15 +92,20 @@ def test_lnn(args):
         )
         for ax, name in axes:
             plotting.save_plot_with_tags(ax, opts[-1], name)
-        
-    for cfg in opts:
-        main.run_benchmark(
-            cfg,
-            record=args.record,
-            plot=args.plot,
-            concurrent=args.concurrent,
-            repeat=args.repeat,
-        )
+
+    if args.record:
+        for i, result in enumerate(res):
+            rec = analysis.Recorder()
+            rec.record(opts[i], result, 0)
+            
+    # for cfg in opts:
+    #     main.run_benchmark(
+    #         cfg,
+    #         record=args.record,
+    #         plot=args.plot,
+    #         concurrent=args.concurrent,
+    #         repeat=args.repeat,
+    #     )
 
 
 if __name__ == "__main__":
