@@ -34,7 +34,7 @@ class Learner(Component):
         return self.learn(**kw)
 
     def learn(self, *args, **kwargs):
-        return NotImplemented("Not implemented in " + self.__class__.__name__)
+        return NotImplementedError("Not implemented in " + self.__class__.__name__)
 
 
 class LearnerNN(nn.Module, Learner):
@@ -123,12 +123,12 @@ class LearnerNN(nn.Module, Learner):
             self.layers[-1].weight.data = torch.abs(self.layers[-1].weight.data)
 
     def get_all(
-        self, S: torch.Tensor, Sdot: torch.Tensor
+        self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes the value of the learner, its lie derivative and the circle."""
         raise NotImplementedError
 
-    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor) -> torch.Tensor:
+    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None) -> torch.Tensor:
         raise NotImplementedError
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -337,7 +337,7 @@ class LearnerCT(LearnerNN):
     """
 
     def get_all(
-            self, S: torch.Tensor, Snext: torch.Tensor, times: torch.Tensor
+            self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns the value of the function, its lie derivative and circle.
 
@@ -357,7 +357,7 @@ class LearnerCT(LearnerNN):
         #assert len(S) == len(Sdot)
 
         nn = self(S)
-        nn_next = self(Snext)
+        nn_next = self(Sdot)
         V = nn
         Vdot = (nn_next-nn)/times
         #nn, grad_nn = self.compute_net_gradnet(S)
@@ -368,7 +368,7 @@ class LearnerCT(LearnerNN):
         #Vdot = self.compute_dV(gradV[:len(Sdot)], Sdot)
         return V, Vdot, circle
     
-    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: torch.Tensor) -> torch.Tensor:
+    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None) -> torch.Tensor:
         return self.get_all(S, Sdot, times)[1]
 
     def compute_dV(self, gradV: torch.Tensor, Sdot: torch.Tensor) -> torch.Tensor:
@@ -390,7 +390,7 @@ class LearnerDT(LearnerNN):
     """Leaner class for discrete time dynamical models."""
 
     def get_all(
-            self, S: torch.Tensor, Sdot: torch.Tensor, times: torch.Tensor,
+            self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes V, delta_V and circle.
 
@@ -420,7 +420,7 @@ class LearnerDT(LearnerNN):
 
         return V, delta_V, circle
     
-    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: torch.Tensor) -> torch.Tensor:
+    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None) -> torch.Tensor:
         return self.get_all(S, Sdot, times)[1] # Returns 1 step change
 
 
