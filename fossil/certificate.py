@@ -87,7 +87,7 @@ class Certificate:
     def __init__(self, domains: dict[str, Any], config: Union[ScenAppConfig, None] = None) -> None:
         pass
 
-    def get_violations(self, B, Bdot, S, Sdot, times, state_data) -> tuple[int, int]:
+    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data) -> tuple[int, int]:
         return 0, 0
 
     def estimate_beta(self, learner):
@@ -427,7 +427,7 @@ class Practical_Lyapunov(Certificate):
                 V_G = V[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
                 V_SD = V[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
                 beta = V_SG.min()
-                losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind, supp_samples)
+                losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind if Sind is not None else {}, supp_samples)
                 
                 sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
                 max_loss = losses[sorted_keys[0]]
@@ -459,21 +459,21 @@ class Practical_Lyapunov(Certificate):
                             max_loss.backward()
                             supp_samples = supp_samples.union(set([sorted_keys[0]]))
                     else: 
+                        new_supp = False
                         if isinstance(supp_loss, torch.Tensor):
                             if isinstance(supp_loss, torch.Tensor):
                                 supp_loss.backward(retain_graph=True)
                             supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                            new_supp = False
                             for k in sorted_keys:
                                 optimizer.zero_grad()
                                 losses[k].backward(retain_graph=True)
-                            grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                            inner = torch.inner(grads, supp_grads)
-                            #if torch.abs(supp_loss-prev_supp_loss) < 1e-10: #convergence of support loss check
-                            if inner <= 0:
-                                supp_samples = supp_samples.union(set([k]))
-                                new_supp = True
-                                break
+                                grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                                inner = torch.inner(grads, supp_grads)
+                                #if torch.abs(supp_loss-prev_supp_loss) < 1e-10: #convergence of support loss check
+                                if inner <= 0:
+                                    supp_samples = supp_samples.union(set([k]))
+                                    new_supp = True
+                                    break
                         if not new_supp:
                             optimizer.zero_grad()
                             if isinstance(supp_loss, torch.Tensor):
@@ -496,13 +496,14 @@ class Practical_Lyapunov(Certificate):
                     V_SD = V[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
                     beta = V_SG.min()
                     state_itt += 1
-                    loss = self.compute_state_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind, supp_samples)
+                    loss = self.compute_state_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind if Sind is not None else {}, supp_samples)
                     if loss == 0:
                         state_sol=True
                         break
                     else:
                         if state_itt % 1000 == 0:
-                            loss_v = loss.item() if hasattr(loss, "item") else loss
+                            loss_val = loss[0] if isinstance(loss, tuple) else loss
+                            loss_v = loss_val.item() if hasattr(loss_val, "item") else loss_val
                             cert_log.debug("{} - loss: {:.10f}".format(state_itt, loss_v))
                             
                         if isinstance(loss, torch.Tensor):
@@ -528,7 +529,7 @@ class Practical_Lyapunov(Certificate):
         V_SD = V[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
         beta = V_SG.min()
 
-        losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind, supp_samples)
+        losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind if Sind is not None else {}, supp_samples)
 
         max_k = max(losses, key=lambda k: losses[k])
         max_loss = losses[max_k]
@@ -541,8 +542,8 @@ class Practical_Lyapunov(Certificate):
         supp_samples.discard(-1)
         return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
 
-    def get_violations(self, V, Vdot, S, Sdot, times, state_data):
-        req_diff = (V(state_data["init"]).max()-V(state_data["goal_border"]).min())/self.T
+    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
+        req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal_border"]).min()) / self.T
         violated = 0
         true_violated = 0
         for i, (traj, traj_deriv, time) in enumerate(zip(S, Sdot, times)):
@@ -553,9 +554,9 @@ class Practical_Lyapunov(Certificate):
             traj = traj[valid_inds]
             traj_deriv = traj_deriv[valid_inds]
             time = time[valid_inds]
-            pred_V = V(traj)
-            pred_0 = V(torch.zeros_like(traj))
-            pred_Vdot = Vdot(traj, traj_deriv, time)
+            pred_V = certificate(traj)
+            pred_0 = certificate(torch.zeros_like(traj))
+            pred_Vdot = certificate_dot(traj, traj_deriv, time)
             non_goal_inds = torch.where(domains.Complement(self.D[XG]).check_containment(traj))
             if len(non_goal_inds) == 0:
                 true_violated += 1
@@ -877,23 +878,25 @@ class BarrierAlt(Certificate):
         supp_samples = supp_samples.union(set([max_k]))
         return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
 
-    def get_violations(self, B, Bdot, S, Sdot, times, state_data):
+    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
         if self.D is None or self.D.get(XD) is None or self.D.get(XI) is None or self.D.get(XU) is None:
             return 0, 0
-        req_diff = (B(state_data["unsafe"]).min()-B(state_data["init"]).max())/self.T
+        req_diff = (certificate(state_data["unsafe"]).min() - certificate(state_data["init"]).max()) / self.T
         true_violated = 0
         violated = 0
-        for i, (traj, traj_deriv, time) in enumerate(zip(S, Sdot, times)):
-            traj, traj_deriv, time = torch.tensor(traj.T, dtype=torch.float32), torch.tensor(np.array(traj_deriv).T, dtype=torch.float32), torch.tensor(time, dtype=torch.float32)
+        for traj, traj_deriv, time in zip(S, Sdot, times):
+            traj = torch.tensor(traj.T, dtype=torch.float32)
+            traj_deriv = torch.tensor(np.array(traj_deriv).T, dtype=torch.float32)
+            time = torch.tensor(time, dtype=torch.float32)
             valid_inds = torch.where(self.D[XD].check_containment(traj))
             traj = traj[valid_inds]
             traj_deriv = traj_deriv[valid_inds]
             time = time[valid_inds]
             initial_inds = torch.where(self.D[XI].check_containment(traj))
             unsafe_inds = torch.where(self.D[XU].check_containment(traj))
-            pred_B_i = B(traj[initial_inds])
-            pred_B_u = B(traj[unsafe_inds])
-            pred_B_dots = Bdot(traj, traj_deriv, time)
+            pred_B_i = certificate(traj[initial_inds])
+            pred_B_u = certificate(traj[unsafe_inds])
+            pred_B_dots = certificate_dot(traj, traj_deriv, time)
             if any(self.D[XU].check_containment(traj)):
                 true_violated += 1
             #if (any(pred_B_i >= 0) or
@@ -901,7 +904,6 @@ class BarrierAlt(Certificate):
             #    raise ValueError("Value violation!")
             if any(pred_B_dots > req_diff):
                 violated += 1
-                continue
         return violated, true_violated
 
 
@@ -1037,19 +1039,20 @@ class RWS(Certificate):
             barr_lie_loss = relu(barr_lie_loss)
 
         valid_Vdot = True
+        lie_accuracy = 0.0  # Ensure lie_accuracy is always defined
         if len(lie_loss) == 0:
-            lie_accuracy = 0.0
             loss = 0.0
             # plus 0.1 so this doesn't accidentally lead to loss = 0
             supp_loss = -1
             valid_Vdot = False
 
         if valid_Vdot:
-
             # this might need changing in case there are points in the unsafe or goal set?
             # ensure no goal states in domain data (see rwa_2 for example)
-            lie_accuracy=(((Vdot_selected <= -req_diff).count_nonzero()).item() * 100 / Vdot_selected.shape[0]
-            )
+            if Vdot_selected.shape[0] > 0:
+                lie_accuracy = (((Vdot_selected <= -req_diff).count_nonzero()).item() * 100 / Vdot_selected.shape[0])
+            else:
+                lie_accuracy = 0.0
             supp_max = torch.tensor([-1.0])
             losses = {}
             lie_losses = {}
@@ -1063,7 +1066,7 @@ class RWS(Certificate):
                 if len(lie_unsel_inds) > 0:
                     supp_max = torch.max(supp_max, barr_lie_loss[lie_unsel_inds].max())
             supp_loss = supp_max 
-            
+
             for i, (sel_inds, unsel_inds) in enumerate(zip(selected_inds, unselected_inds)):
                 if supp_loss != -1:
                     if len(sel_inds) > 0:
@@ -1080,7 +1083,6 @@ class RWS(Certificate):
                         lie_losses[i] = elem_lie_loss
                     losses = {k: lie_losses[k]+psi_s for k in lie_losses} 
                 else:
-
                     lie_r_max = lie_loss.max()
                     lie_b_max = barr_lie_loss.max()
                     if lie_r_max > lie_b_max:
@@ -1102,6 +1104,7 @@ class RWS(Certificate):
         else:
             supp_loss = 0 
             losses = {-1: psi_s}
+            lie_accuracy = 0.0
         if supp_loss != -1:
             supp_loss = supp_loss + psi_s
 
@@ -1161,14 +1164,16 @@ class RWS(Certificate):
         samples_dot = Sdot[XD]
         samples_with_nexts = S[XD][:idot1]
         states_only = torch.cat([samples[idot1:i1], samples[i1+idot2:i1+i2], samples[i1+i2+idot3:i1+i2+i3], samples[i1+i2+i3+idot4:i1+i2+i3+i4], samples[i1+i2+i3+i4+idot5:]])
-        times = torch.cat([times[label] for label in label_order if type(times[label]) is not list])
+        if times is not None and not isinstance(times, dict):
+            raise TypeError("times must be a dict[str, torch.Tensor] or None")
+        times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
         supp_samples = set()
         state_sol = False
         best_supp_defd = False
         for t in range(learn_loops):
             optimizer.zero_grad()
 
-            B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times[:idot1])
+            B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
 
             B = learner(states_only)
             
@@ -1180,17 +1185,11 @@ class RWS(Certificate):
             beta = B_sg.min()
             
             if state_sol:
-            
                 losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
-                
                 sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
                 max_loss = losses[sorted_keys[0]]
-                
-
                 if (t-1) % int(learn_loops / 100) == 0 or learn_loops - t < 10:
-
                     log_loss_acc(t, max_loss, accuracy, learner.verbose)
-                
                 if supp_loss != -1:
                     supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
                     if supp_loss_float < best_loss:
@@ -1204,7 +1203,6 @@ class RWS(Certificate):
                         else:
                             supp_samples = supp_samples.union(set([sorted_keys[0]]))
                             max_loss.backward()
-                        
                     elif discrete and supp_loss_float <= 0:
                         if max_loss <= 0:
                             break
@@ -1246,10 +1244,8 @@ class RWS(Certificate):
                 state_itt = 0
                 while True:
                     optimizer.zero_grad()
-                    B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times[:idot1])
-
+                    B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
                     B = learner(states_only)
-                    
                     B_d_states = B[:i1-idot1]
                     B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
                     B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
@@ -1267,18 +1263,15 @@ class RWS(Certificate):
                         if state_itt % 100 == 0:
                             loss_v = state_loss.item() if hasattr(state_loss, "item") else state_loss
                             cert_log.debug("{} - loss: {:.5f}".format(state_itt, loss_v))
-                            
         if best_net is None:
             best_net = copy.deepcopy(learner)
-            
-        B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, times[:idot1])
+        B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
         B = best_net(states_only)
         B_d_states = B[:i1-idot1]
         B_i = B[i1-idot1:i1+i2-idot2-idot1]
         B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
         B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
         B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-
         beta = B_sg.min()
         losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
         max_k = max(losses, key=lambda k: losses[k])
@@ -1288,29 +1281,30 @@ class RWS(Certificate):
         best_net.beta = beta.item()
         return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
 
-    def get_violations(self, B, Bdot, S, Sdot, times, states):
+    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
         if self.D is None or self.D.get(XI) is None or self.D.get(XG) is None or self.D.get(XS) is None:
             return 0, 0
-        req_diff = (B(states["init"]).max()-B(states["goal"]).min())/self.T
+        req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal"]).min()) / self.T
         true_violated = 0
         violated = 0
-        for i, (traj, traj_deriv, time) in enumerate(zip(S, Sdot, times)):
-            traj, traj_deriv, time = torch.tensor(traj.T, dtype=torch.float32), torch.tensor(np.array(traj_deriv).T, dtype=torch.float32), torch.tensor(time, dtype=torch.float32)
+        for traj, traj_deriv, time in zip(S, Sdot, times):
+            traj = torch.tensor(traj.T, dtype=torch.float32)
+            traj_deriv = torch.tensor(np.array(traj_deriv).T, dtype=torch.float32)
+            time = torch.tensor(time, dtype=torch.float32)
             if self.D is None or self.D.get(XI) is None or self.D.get(XG) is None or self.D.get(XS) is None:
                 continue
             initial_inds = torch.where(self.D[XI].check_containment(traj))
             goal_inds = torch.where(self.D[XG].check_containment(traj))
-            V_d = B(traj)
-            pred_B_dots = Bdot(traj, traj_deriv, time)
+            V_d = certificate(traj)
+            pred_dots = certificate_dot(traj, traj_deriv, time)
             goal_inds_0 = torch.where(self.D[XG].check_containment(traj))[0]
             if not all(self.D[XS].check_containment(traj)) or not any(self.D[XG].check_containment(traj)):
                 true_violated += 1
             lie_inds = torch.nonzero(V_d <= 0)
             if any(self.D[XG].check_containment(traj)):
                 lie_inds = [ind.item() for ind in lie_inds if ind not in goal_inds_0]
-            if any(pred_B_dots[lie_inds] > req_diff):
+            if any(pred_dots[lie_inds] > req_diff):
                 violated += 1
-                continue
         return violated, true_violated
 
 
@@ -1420,16 +1414,17 @@ class RSWS(RWS):
 
     def learn(
         self,
-        learner: learner.LearnerNN,
+        learner: 'learner.LearnerNN',
         optimizer: Optimizer,
-        S: list,
-        Sdot: list,
-        Sind: list,
-        times: list,
-        best_loss: float,
-        best_net: learner.LearnerNN,
+        S: dict[str, torch.Tensor],
+        Sdot: dict[str, torch.Tensor],
+        Sind: Union[dict[str, list], None] = None,
+        times: Union[dict[str, torch.Tensor], None] = None,
+        best_loss: float = float('inf'),
+        best_net: Union['learner.LearnerNN', None] = None,
         f_torch=None,
-        discrete = False,
+        discrete: bool = False,
+        convex: bool = True,
     ) -> dict:
         """
         :param learner: learner object
@@ -1469,12 +1464,19 @@ class RSWS(RWS):
         
         samples_with_nexts = torch.cat([samples[:lie_dot_indices[1]], samples[goal_dot_indices[0]:goal_dot_indices[1]]])
         
-        times = torch.cat([times[label] for label in label_order if type(times[label]) is not list])
+        if times is not None and not isinstance(times, dict):
+            raise TypeError("times must be a dict[str, torch.Tensor] or None")
+        times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
         supp_samples = set()
         for t in range(learn_loops):
             optimizer.zero_grad()
 
-            V, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, torch.cat([times[:lie_dot_indices[1]],times[-len(Sdot[XG]):]]))
+            if times_cat is not None:
+                times_for_get_all = torch.cat([times_cat[:lie_dot_indices[1]], times_cat[-len(Sdot[XG]):]])
+            else:
+                times_for_get_all = torch.tensor([])  # or appropriate empty tensor
+
+            V, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, times_for_get_all)
 
             (
                 V_d,
@@ -1484,21 +1486,21 @@ class RSWS(RWS):
             Vstates = learner(samples)
 
             V_d_states = Vstates[lie_indices[0]:lie_indices[1]]
-            V_i = Vstates[init_indices[0] : init_indices[1]]
-            V_u = Vstates[unsafe_indices[0] : unsafe_indices[1]]
-            S_dg = samples[goal_border_indices[0] : goal_border_indices[1]]
-            V_g = Vstates[goal_indices[0] : goal_indices[1]]
-            
-            Vdot_g = Vdot[lie_dot_indices[1] :]
+            V_i = Vstates[init_indices[0]: init_indices[1]]
+            V_u = Vstates[unsafe_indices[0]: unsafe_indices[1]]
+            S_dg = samples[goal_border_indices[0]: goal_border_indices[1]]
+            V_g = Vstates[goal_indices[0]: goal_indices[1]]
+
+            Vdot_g = Vdot[lie_dot_indices[1]:]
             samples_dot_d = samples_dot[: lie_indices[1]]
 
             beta = learner.compute_minimum(S_dg)[0]+V_g.min()/100
-            loss, supp_loss, accuracy, sub_sample  = self.compute_loss(V_i, V_u, V_d, V_d_states, V_g, gradV_d, beta, Sind, supp_samples, convex)
+            loss, supp_loss, accuracy, sub_sample  = self.compute_loss(V_i, V_u, V_d, V_d_states, V_g, gradV_d, beta, Sind, supp_samples, convex) #type: ignore
 
             beta2 = learner.compute_minimum(S_dg)[0]
             #beta_loss, supp_beta_loss, beta_sub_sample = 0, -1, set()
             # converges without beta loss
-            beta_loss, supp_beta_loss, beta_sub_sample = self.compute_beta_loss(beta, beta2, V_g, Vdot_g, V_d_states, Sind, supp_samples, convex)
+            beta_loss, supp_beta_loss, beta_sub_sample = self.compute_beta_loss(beta, beta2, V_g, Vdot_g, V_d_states, Sind, supp_samples, convex) # type: ignore
             loss = loss + beta_loss
             #loss = torch.max(loss,beta_loss)
             if supp_loss != -1:
@@ -1534,7 +1536,11 @@ class RSWS(RWS):
                 else:
                     supp_samples = supp_samples.union(sub_sample)
             optimizer.step()
-        V, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, torch.cat([times[:lie_dot_indices[1]],times[-len(Sdot[XG]):]]))
+        if times_cat is not None:
+            times_for_get_all = torch.cat([times_cat[:lie_dot_indices[1]], times_cat[-len(Sdot[XG]):]])
+        else:
+            times_for_get_all = torch.tensor([])  # or appropriate empty tensor
+        V, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, times_for_get_all)
         (
             V_d,
             gradV_d,
@@ -1554,10 +1560,10 @@ class RSWS(RWS):
         
         beta = learner.compute_minimum(S_dg)[0]+V_g.min()/100
         
-        loss, supp_loss, accuracy, sub_sample  = self.compute_loss(V_i, V_u, V_d, V_d_states, V_g, gradV_d, beta, Sind, supp_samples, convex)
+        loss, supp_loss, accuracy, sub_sample  = self.compute_loss(V_i, V_u, V_d, V_d_states, V_g, gradV_d, beta, Sind, supp_samples, convex) # type: ignore
 
         beta2 = learner.compute_minimum(S_dg)[0]
-        beta_loss, supp_beta_loss, beta_sub_sample = self.compute_beta_loss(beta, beta2, V_g, Vdot_g, V_d_states, Sind, supp_samples, convex)
+        beta_loss, supp_beta_loss, beta_sub_sample = self.compute_beta_loss(beta, beta2, V_g, Vdot_g, V_d_states, Sind, supp_samples, convex) # type: ignore
         #loss = torch.max(loss, beta_loss)
         loss = loss + beta_loss
 
@@ -1572,12 +1578,14 @@ class RSWS(RWS):
     def beta_search(self, learner, verifier, C, Cdot, S):
         return learner.compute_minimum(S[XG_BORDER])[0]
     
-    def get_violations(self, B, Bdot, S, Sdot, times, states):
-        req_diff = (B(states["init"]).max()-B(states["goal"]).min())/self.T
+    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
+        req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal"]).min()) / self.T
         true_violated = 0
         violated = 0
-        for i, (traj, traj_deriv, time) in enumerate(zip(S, Sdot, times)):
-            traj, traj_deriv, time = torch.tensor(traj.T, dtype=torch.float32), torch.tensor(np.array(traj_deriv).T, dtype=torch.float32), torch.tensor(time, dtype=torch.float32)
+        for traj, traj_deriv, time in zip(S, Sdot, times):
+            traj = torch.tensor(traj.T, dtype=torch.float32)
+            traj_deriv = torch.tensor(np.array(traj_deriv).T, dtype=torch.float32)
+            time = torch.tensor(time, dtype=torch.float32)
             if self.D is None or self.D.get(XI) is None or self.D.get(XG) is None or self.D.get(XS) is None:
                 continue
 
@@ -1592,8 +1600,8 @@ class RSWS(RWS):
             # getting too many violations, need to investigate
 
             goal_inds = torch.where(self.D[XG].check_containment(traj))
-            V_d = B(traj)
-            pred_B_dots = Bdot(traj, traj_deriv, time)
+            V_d = certificate(traj)
+            pred_dots = certificate_dot(traj, traj_deriv, time)
             goal_inds_0 = torch.where(self.D[XG].check_containment(traj))[0]
             if len(goal_inds_0) == 0:
                 continue
@@ -1603,7 +1611,7 @@ class RSWS(RWS):
             lie_inds = torch.nonzero(V_d <= 0)
             if any(self.D[XG].check_containment(traj)):
                 lie_inds = [ind.item() for ind in lie_inds if ind not in goal_inds_0]
-            if any(pred_B_dots[lie_inds] > req_diff):
+            if any(pred_dots[lie_inds] > req_diff):
                 violated += 1
                 continue
         return violated, true_violated
@@ -1618,28 +1626,47 @@ class DoubleCertificate(Certificate):
         self.certificate2 = None
 
     def compute_loss(self, C1, C2, Cdot1, Cdot2):
+        if self.certificate1 is None or self.certificate2 is None:
+            raise AttributeError("certificate1 and certificate2 must be set before calling compute_loss.")
         loss1 = self.certificate1.compute_loss(C1, Cdot1)
         loss2 = self.certificate2.compute_loss(C2, Cdot2)
         return loss1[0] + loss2[0]
 
     def learn(
-        self, learner: tuple, optimizer: Optimizer, S: dict, Sdot: dict, f_torch=None
-    ):
-        pass
+        self,
+        learner: 'learner.LearnerNN',
+        optimizer: Optimizer,
+        S: dict[str, Any],
+        Sdot: dict[str, Any],
+        Sind: Union[dict[str, list], None] = None,
+        times: Union[dict[str, Any], None] = None,
+        best_loss: float = float('inf'),
+        best_net: Union['learner.LearnerNN', None] = None,
+        f_torch=None,
+        discrete: bool = False,
+    ) -> dict:
+        # Not implemented for DoubleCertificate
+        raise NotImplementedError("DoubleCertificate.learn is not implemented.")
 
-    def get_constraints(self, verifier, C, Cdot) -> Generator:
+    def get_constraints(self, verifier, C, Cdot) -> tuple:
         """
         :param verifier: verifier object
         :param C: tuple containing SMT formula of Lyapunov function and barrier function
         :param Cdot: tuple containing SMT formula of Lyapunov lie derivative and barrier lie derivative
-
+        :return: tuple of constraints from both certificates
         """
         C1, C2 = C
         Cdot1, Cdot2 = Cdot
+        if self.certificate1 is None or self.certificate2 is None:
+            raise AttributeError("certificate1 and certificate2 must be set before calling get_constraints.")
         cert1_cs = self.certificate1.get_constraints(verifier, C1, Cdot1)
         cert2_cs = self.certificate2.get_constraints(verifier, C2, Cdot2)
-        for cs in (*cert1_cs, *cert2_cs):
-            yield cs
+        # Ensure both are tuples (as required by base class)
+        if not isinstance(cert1_cs, tuple):
+            cert1_cs = tuple(cert1_cs)
+        if not isinstance(cert2_cs, tuple):
+            cert2_cs = tuple(cert2_cs)
+        return cert1_cs + cert2_cs
 
 
 class AutoSets:
@@ -1648,25 +1675,46 @@ class AutoSets:
     def __init__(self, XD, certificate: CertificateType) -> None:
         self.XD = XD
         self.certificate = certificate
+        self.sets = None  # Ensure self.sets is always defined
 
-    def auto(self) -> (dict, dict):
+    def auto(self) -> tuple[dict, dict]:
         if self.certificate == CertificateType.PRACTICALLYAPUNOV:
             return self.auto_practical_lyap()
         elif self.certificate == CertificateType.SEQUENTIALREACH:
             return self.auto_sequential_reach()
         elif self.certificate == CertificateType.BARRIERALT:
-            self.auto_barrier_alt(self.sets)
+            return self.auto_barrier_alt(self.sets)
         elif self.certificate == CertificateType.RWS:
-            self.auto_rws(self.sets)
+            return self.auto_rws(self.sets)
         elif self.certificate == CertificateType.RSWS:
-            self.auto_rsws(self.sets)
+            return self.auto_rsws(self.sets)
         elif self.certificate == CertificateType.RAR:
-            self.auto_rar(self.sets)
+            return self.auto_rar(self.sets)
+        else:
+            raise NotImplementedError("Unknown certificate type for auto()")
 
-    def auto_lyap(self) -> None:
+    def auto_lyap(self) -> tuple[dict, dict]:
         domains = {XD: self.XD}
         data = {XD: self.XD._generate_data(1000)}
         return domains, data
+
+    def auto_practical_lyap(self) -> tuple[dict, dict]:
+        raise NotImplementedError("auto_practical_lyap is not implemented.")
+
+    def auto_sequential_reach(self, sets=None) -> tuple[dict, dict]:
+        raise NotImplementedError("auto_sequential_reach is not implemented.")
+
+    def auto_barrier_alt(self, sets=None) -> tuple[dict, dict]:
+        raise NotImplementedError("auto_barrier_alt is not implemented.")
+
+    def auto_rws(self, sets=None) -> tuple[dict, dict]:
+        raise NotImplementedError("auto_rws is not implemented.")
+
+    def auto_rsws(self, sets=None) -> tuple[dict, dict]:
+        raise NotImplementedError("auto_rsws is not implemented.")
+
+    def auto_rar(self, sets=None) -> tuple[dict, dict]:
+        raise NotImplementedError("auto_rar is not implemented.")
 
 
 def get_certificate(
@@ -1674,16 +1722,16 @@ def get_certificate(
 ) -> Type[Certificate]:
     if certificate == CertificateType.PRACTICALLYAPUNOV:
         return Practical_Lyapunov
-    elif certificate == CertificateType.SEQUENTIALREACH:
-        return Sequential_Reach
+    # elif certificate == CertificateType.SEQUENTIALREACH:
+    #     return Sequential_Reach
     elif certificate == CertificateType.BARRIERALT:
         return BarrierAlt
     elif certificate in (CertificateType.RWS, CertificateType.RWA):
         return RWS
     elif certificate in (CertificateType.RSWS, CertificateType.RSWA):
         return RSWS
-    elif certificate == CertificateType.RAR:
-        return ReachAvoidRemain
+    # elif certificate == CertificateType.RAR:
+    #     return ReachAvoidRemain
     elif certificate == CertificateType.CUSTOM:
         if custom_cert is None:
             raise ValueError(
