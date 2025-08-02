@@ -326,10 +326,8 @@ class SingleScenApp:
         S_inds = self.S["indices"]
         S_traj = self.S_traj
         times = self.S["times"]
-        # Initialize CEGIS state
         state = self.init_state(Sdot, S, S_traj, S_inds, times)
 
-        # Reset timers for components
         self.learner.get_timer().reset()
         state["net_dot"] = self.learner.nn_dot
         iters = 0
@@ -693,9 +691,6 @@ class DoubleScenApp(SingleScenApp):
         self._result = Result(state[ScenAppStateKeys.bounds], a_post_eps, state[ScenAppStateKeys.best_net], stats)
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result
-
-
-
 
 class ScenApp:
     def __new__(cls, config: ScenAppConfig) -> Union[DoubleScenApp, SingleScenApp]:

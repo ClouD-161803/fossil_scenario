@@ -134,7 +134,7 @@ class Certificate:
         For control synthesis, the f_torch function is passed to the certificate, which is used to recompute the
         dynamics Sdot from the data S at each loop, since the control synthesis changes with each iteration.
         """
-        raise NotImplemented("Not implemented in " + self.__class__.__name__)
+        raise NotImplementedError("Not implemented in " + self.__class__.__name__)
 
     def get_constraints(self, verifier, C, Cdot) -> tuple:
         """
@@ -163,7 +163,7 @@ class Certificate:
 
 
         """
-        raise NotImplemented("Not implemented in " + self.__class__.__name__)
+        raise NotImplementedError("Not implemented in " + self.__class__.__name__)
 
     @staticmethod
     def _assert_state(domains, data):
@@ -202,7 +202,7 @@ class Practical_Lyapunov(Certificate):
             V_D_lie: torch.Tensor,
             beta: torch.Tensor,
             Vdot: torch.Tensor, 
-            indices: list,
+            indices: dict,
             supp_samples: set,
     ) -> tuple[torch.Tensor, dict]:
         """_summary_
@@ -242,7 +242,7 @@ class Practical_Lyapunov(Certificate):
             V_D_lie: torch.Tensor,
             beta: torch.Tensor,
             Vdot: torch.Tensor, 
-            indices: list,
+            indices: dict,
             supp_samples: set,
     ) -> tuple[torch.Tensor, dict]:
         """_summary_
@@ -570,7 +570,7 @@ class BarrierAlt(Certificate):
         B_u: torch.Tensor,
         B_d: torch.Tensor,
         Bdot_d: torch.Tensor,
-        indices: list,
+        indices: dict,
         supp_samples: set,
     ) -> tuple[torch.Tensor, dict]:
         relu = torch.nn.ReLU()
@@ -589,7 +589,7 @@ class BarrierAlt(Certificate):
         B_u: torch.Tensor,
         B_d: torch.Tensor,
         Bdot_d: torch.Tensor,
-        indices: list,
+        indices: dict,
         supp_samples: set,
     ) -> tuple[torch.Tensor, dict]:
         """Computes loss function for Barrier certificate.
