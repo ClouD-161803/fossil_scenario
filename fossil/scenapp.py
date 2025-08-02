@@ -1,4 +1,4 @@
-from typing import NamedTuple, Union
+from typing import NamedTuple, Union, Tuple
 
 import fossil.learner as learner
 import fossil.verifier as verifier
@@ -198,7 +198,11 @@ class SingleScenApp:
         print("Direct Property scenario approach risk: {:.5f}".format(eps))
         print("Certificate violation rate: {:.3f}".format(num_violations/n_data))
         print("Property violation rate: {:.3f}".format(true_violations/n_data))
-        return eps
+
+        if hasattr(eps, 'item'):
+            return float(eps.item())
+        else:
+            return float(eps)
 
 
     def discard(self, state):
@@ -266,15 +270,25 @@ class SingleScenApp:
         alpha = 0.1
         psi_f = []
         psi_v = []
+    
+        if len(inds) < 2:
+            raise ValueError("Not enough valid data points for gap estimation")
+            
         for i in range(M):
             max_s_f = 0
             max_s_v = 0
             for j in range(N):
-                poss_inds = [[]]
+                
+                ind = np.random.choice(inds)
+                x = state_data[:,[ind]]
+                poss_inds = np.where(np.linalg.norm(state_data-state_data[:,[ind]],axis=0)<alpha)
+                
+                
                 while len(poss_inds[0]) <= 1:
-                    ind  =np.random.choice(inds)
+                    ind = np.random.choice(inds)
                     x = state_data[:,[ind]]
                     poss_inds = np.where(np.linalg.norm(state_data-state_data[:,[ind]],axis=0)<alpha)
+                    
                 y_ind = ind
                 while y_ind == ind:
                     y_ind = np.random.choice(poss_inds[0])
@@ -409,7 +423,7 @@ class SingleScenApp:
                 old_loss = state["loss"]
                 old_best = state["best_loss"]
                 scenapp_log.info("Iteration: {}".format(iters))
-            if type(old_best) is float:
+            if isinstance(old_best, (int, float)):
                 scenapp_log.info("Best loss: {:.10f}".format(old_best))
             else:
                 scenapp_log.info("Best loss: {:.10f}".format(old_best.item()))
@@ -486,7 +500,7 @@ class SingleScenApp:
 
     def _assert_state(self):
         assert self.config.LEARNING_RATE > 0
-        assert self.config.CEGIS_MAX_TIME_S > 0
+        assert self.config.SCENAPP_MAX_TIME_S > 0
         if self.config.TIME_DOMAIN == TimeDomain.DISCRETE:
             assert self.config.CERTIFICATE in (
                 CertificateType.LYAPUNOV,
@@ -501,7 +515,9 @@ class DoubleScenApp(SingleScenApp):
 
     def __init__(self, config: ScenAppConfig):
         super().__init__(config)
-        self.lyap_learner, self.barr_learner = self.learner
+        learner_tuple = self._initialise_learner()
+        self.lyap_learner, self.barr_learner = learner_tuple
+        self.learner = learner_tuple
     
     def _initialise_certificate(self):
         custom_certificate = self.config.CUSTOM_CERTIFICATE
@@ -510,7 +526,7 @@ class DoubleScenApp(SingleScenApp):
             raise ValueError("DoubleScenApp only suppots RAR certificates")
         return cert_type(self.domains, self.config)
 
-    def _initialise_learner(self):
+    def _initialise_learner(self) -> Tuple[learner.LearnerNN, learner.LearnerNN]:  # type: ignore[override]
         learner_type = learner.get_learner(self.config.TIME_DOMAIN, self.config.CTRLAYER)
 
         lyap_learner = learner_type(
@@ -518,7 +534,7 @@ class DoubleScenApp(SingleScenApp):
             self.certificate.learn,
             *self.config.N_HIDDEN_NEURONS,
             activation=self.config.ACTIVATION,
-            bias=self.certificate.bias[0],
+            bias=self.certificate.bias,
             config=self.config,
                             )
         
@@ -527,7 +543,7 @@ class DoubleScenApp(SingleScenApp):
             self.certificate.learn,
             *self.config.N_HIDDEN_NEURONS_ALT,
             activation=self.config.ACTIVATION_ALT,
-            bias=self.certificate.bias[1],
+            bias=self.certificate.bias,
             config=self.config,
                             )
 
@@ -540,15 +556,16 @@ class DoubleScenApp(SingleScenApp):
         
         optimizer = torch.optim.AdamW(
                 chain(
-                    *(l.parameters() for l in self.learner),
+                    self.lyap_learner.parameters(),
+                    self.barr_learner.parameters(),
                     ),
                 lr=self.config.LEARNING_RATE,
                 )
         return optimizer
     
     def _initialise_verifier(self):
-        lyap_num_params = sum(p.numel() for p in self.learner[0].parameters() if p.requires_grad)
-        barr_num_params = sum(p.numel() for p in self.learner[1].parameters() if p.requires_grad)
+        lyap_num_params = sum(p.numel() for p in self.lyap_learner.parameters() if p.requires_grad)
+        barr_num_params = sum(p.numel() for p in self.barr_learner.parameters() if p.requires_grad)
         num_params = lyap_num_params + barr_num_params
 
         verifier_type = verifier.get_verifier_type(self.config.VERIFIER)
