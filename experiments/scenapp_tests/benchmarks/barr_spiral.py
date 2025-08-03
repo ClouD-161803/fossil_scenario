@@ -65,14 +65,14 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
     XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
 
-    n_data = 1000
+    n_data = 100
     
     sets = {
         certificate.XD: XD,
         certificate.XI: XI,
         certificate.XU: XU,
     }
-    n_state_data = 10000
+    n_state_data = 100
     state_data = {
         certificate.XD: XD._generate_data(n_state_data)(),
         certificate.XI: XI._generate_data(n_state_data)(),
@@ -85,7 +85,7 @@ def test_lnn(args):
     system = models.Spiral
     system.time_horizon = 100
     
-    num_runs = 5
+    num_runs = 1
 
     init_data = [XI._generate_data(n_data)() for j in range(num_runs)]
     

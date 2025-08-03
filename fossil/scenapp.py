@@ -554,7 +554,7 @@ class SingleScenApp:
                 self.learner.get_timer().sum,
                 self.verifier.get_timer().sum,
                 ]
-        # print("Learner times: {}".format(self.learner.get_timer()))
+        print("Learner times: {}".format(self.learner.get_timer()))
         scenapp_log.info("Verifier times: {}".format(self.verifier.get_timer()))
         return state
 
