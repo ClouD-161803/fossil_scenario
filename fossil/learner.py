@@ -3,7 +3,7 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import Callable, Literal, Union, Optional
+from typing import Callable, Literal, Union, Optional, Any
 import warnings
 
 import numpy as np
@@ -16,6 +16,30 @@ from fossil.consts import *
 from fossil.utils import Timer, timer
 
 T = Timer()
+
+
+class CegisStateKeys:
+    x_v = "x_v"
+    x_v_dot = "x_v_dot"
+    x_v_map = "x_v_map"
+    S = "S"
+    S_dot = "S_dot"
+    B = "B"
+    B_dot = "B_dot"
+    optimizer = "optimizer"
+    V = "V"
+    V_dot = "V_dot"
+    cex = "cex"  # counterexamples
+    net = "net"
+    trajectory = "trajectory"
+    factors = "factors"
+    found = "found"
+    verification_timed_out = "verification_timed_out"
+    verifier_fun = "verifier_fun"
+    components_times = "components_times"
+    ENet = "ENet"
+    xdot = "xdot"
+    xdot_func = "xdot_func"
 
 
 class QuadraticFactor(nn.Module):
@@ -33,8 +57,16 @@ class Learner(Component):
     def get(self, **kw):
         return self.learn(**kw)
 
-    def learn(self, *args, **kwargs):
-        return NotImplementedError("Not implemented in " + self.__class__.__name__)
+    def learn(self, *args, **kwargs) -> dict:
+        """Base learn method to be implemented by child classes.
+        
+        Returns:
+            dict: Learning results or state information
+        
+        Raises:
+            NotImplementedError: When called directly on the base class
+        """
+        raise NotImplementedError("Not implemented in " + self.__class__.__name__)
 
 
 class LearnerNN(nn.Module, Learner):
@@ -64,9 +96,9 @@ class LearnerNN(nn.Module, Learner):
 
         for n_hid in args:
             layer = nn.Linear(n_prev, n_hid, bias=bias)
-            self.register_parameter("W" + str(k), layer.weight)
+            setattr(self, "W" + str(k), layer.weight)
             if bias:
-                self.register_parameter("b" + str(k), layer.bias)
+                setattr(self, "b" + str(k), layer.bias)
             self.layers.append(layer)
             n_prev = n_hid
             k = k + 1
@@ -78,9 +110,9 @@ class LearnerNN(nn.Module, Learner):
             layer.weight = torch.nn.Parameter(torch.ones(layer.weight.shape))
             self.layers.append(layer)
         else:  # free output layer
-            self.register_parameter("W" + str(k), layer.weight)
+            setattr(self, "W" + str(k), layer.weight)
             if bias:
-                self.register_parameter("b" + str(k), layer.bias)
+                setattr(self, "b" + str(k), layer.bias)
             self.layers.append(layer)
         if config.LLO and not self.is_positive_definite():
             warnings.warn("LLO set but function is not positive definite")
@@ -101,6 +133,8 @@ class LearnerNN(nn.Module, Learner):
         best_net: "LearnerNN",
         convex: bool
     ) -> dict:
+        if self.learn_method is None:
+            raise ValueError("Learning method is not defined")
         return self.learn_method(net, optimizer, S, Sdot, Sind, times, best_loss, best_net, None, convex)
 
     def get(self, **kw):
@@ -223,9 +257,11 @@ class LearnerNN(nn.Module, Learner):
         if self.factor:
             return self.factor(S), self.factor.derivative(S)
         else:
-            return 1, 0
+            ones = torch.ones_like(S[:, 0])
+            zeros = torch.zeros_like(S[:, 0])
+            return ones, zeros
 
-    def compute_minimum(self, S: torch.Tensor) -> tuple[float, float]:
+    def compute_minimum(self, S: torch.Tensor) -> tuple[float, torch.Tensor]:
         """Computes the minimum of the learner over the input set.
 
         Also returns the argmin of the minimum.
@@ -234,16 +270,16 @@ class LearnerNN(nn.Module, Learner):
             S (torch.Tensor): _description_
 
         Returns:
-            tuple[float, float]: _description_
+            tuple[float, torch.Tensor]: _description_
         """
         C = self(S)
         minimum = torch.min(C, 0)
         value = minimum.values.item()
         index = minimum.indices.item()
-        argmin = S[index]
+        argmin = S[int(index)]
         return value, argmin
 
-    def compute_maximum(self, S: torch.Tensor) -> tuple[float, float]:
+    def compute_maximum(self, S: torch.Tensor) -> tuple[float, torch.Tensor]:
         """Computes the maximum of the learner over the input set.
 
         Also returns the argmax of the maximum.
@@ -252,13 +288,13 @@ class LearnerNN(nn.Module, Learner):
             S (torch.Tensor): _description_
 
         Returns:
-            tuple[float, float]: _description_
+            tuple[float, torch.Tensor]: _description_
         """
         C = self(S)
         maximum = torch.max(C, 0)
         value = maximum.values.item()
         index = maximum.indices.item()
-        argmax = S[index]
+        argmax = S[int(index)]
         return value, argmax
 
     def find_closest_unsat(self, S, Sdot):
@@ -461,8 +497,26 @@ class CtrlLearnerCT(LearnerCT):
 
     # backprop algo
     @timer(T)
-    def learn(self, net, optimizer, S, Sdot, xdot_func):
-        return self.learn_method(net, optimizer, S, Sdot, xdot_func)
+    def learn(
+        self,
+        net: Optional["LearnerNN"] = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        S: Optional[dict] = None,
+        Sdot: Optional[dict] = None,
+        Sind: Optional[dict] = None,
+        times: Optional[dict] = None,
+        best_loss: Optional[float] = None,
+        best_net: Optional["LearnerNN"] = None,
+        convex: Optional[bool] = False
+    ) -> dict:
+        """Learning method for control learners.
+        
+        This method is designed to be compatible with the parent class signature
+        while allowing for different parameters needed for control learning.
+        """
+        if self.learn_method is None:
+            raise ValueError("Learning method is not defined")
+        return self.learn_method(net, optimizer, S, Sdot, Sind)
 
 
 class CtrlLearnerDT(LearnerDT):
@@ -501,8 +555,26 @@ class CtrlLearnerDT(LearnerDT):
 
     # backprop algo
     @timer(T)
-    def learn(self, net, optimizer, S, Sdot, xdot_func):
-        return self.learn_method(net, optimizer, S, Sdot, xdot_func)
+    def learn(
+        self,
+        net: Optional["LearnerNN"] = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        S: Optional[dict] = None,
+        Sdot: Optional[dict] = None,
+        Sind: Optional[dict] = None,
+        times: Optional[dict] = None,
+        best_loss: Optional[float] = None,
+        best_net: Optional["LearnerNN"] = None,
+        convex: Optional[bool] = False
+    ) -> dict:
+        """Learning method for control learners.
+        
+        This method is designed to be compatible with the parent class signature
+        while allowing for different parameters needed for control learning.
+        """
+        if self.learn_method is None:
+            raise ValueError("Learning method is not defined")
+        return self.learn_method(net, optimizer, S, Sdot, Sind)
 
 
 def get_learner(time_domain: TimeDomain, ctrl: Optional[tuple] = None) -> type[LearnerNN]:
