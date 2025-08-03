@@ -807,12 +807,14 @@ class BarrierAlt(Certificate):
         best_net: Union[learner.LearnerNN, None] = None,
         f_torch=None,
         discrete: bool = False,
+        compression_set: Union[set, None] = None,
     ) -> dict:
         """
         :param learner: learner object
         :param optimizer: torch optimiser
         :param S: dict of tensors of data
         :param Sdot: dict of tensors containing f(data)
+        :param compression_set: Optional set to track compression set across calls
         :return: --
         """
 
@@ -833,7 +835,10 @@ class BarrierAlt(Certificate):
         assert times is not None, "times must be provided"
         time_tensor = torch.cat([times[label] for label in label_order if type(times[label]) is not list])
         samples_dot = torch.cat([Sdot[label] for label in label_order if type(Sdot[label]) is not list])
-        supp_samples = set() # Line 3: C ← ∅
+        
+        # Line 3: C ← ∅ (Initialize compression set)
+        supp_samples = compression_set if compression_set is not None else set()
+        
         state_sol = False
         prev_supp_loss = -1000
         best_supp_defd = False
@@ -926,7 +931,16 @@ class BarrierAlt(Certificate):
         max_loss = losses[max_k]
         best_loss = losses[max_k]
         supp_samples = supp_samples.union(set([max_k]))
-        return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
+        
+        supp_samples.discard(-1)
+        
+        return {
+            ScenAppStateKeys.loss: max_loss, 
+            "best_loss": best_loss, 
+            "best_net": best_net, 
+            "new_supps": supp_samples,
+            "compression_set_size": len(supp_samples)
+        }
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
         if self.D is None or self.D.get(XD) is None or self.D.get(XI) is None or self.D.get(XU) is None:

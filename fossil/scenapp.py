@@ -180,7 +180,9 @@ class SingleScenApp:
         Returns:
             int: The calculated compression set size
         """
-        if isinstance(state["supps"], dict):
+        if ScenAppStateKeys.compression_set_size in state:
+            return state[ScenAppStateKeys.compression_set_size]
+        elif isinstance(state["supps"], dict):
             comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
         else:
             comp_size = len(state["supps"].union(state["discarded"]))
@@ -203,6 +205,10 @@ class SingleScenApp:
             print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
         else:
             print(f"Compression set size: {comp_size}/{total_samples}") 
+            
+        if ScenAppStateKeys.compression_set_size in state and self.config.TRACK_COMPRESSION_SET:
+            print(f"Tracked compression set size: {state[ScenAppStateKeys.compression_set_size]}")
+            state["final_compression_set_size"] = state[ScenAppStateKeys.compression_set_size]
 
 
     def a_post_verify(self, cert, cert_deriv, n_data):
@@ -535,6 +541,8 @@ class SingleScenApp:
                 ScenAppStateKeys.best_loss: np.inf,
                 ScenAppStateKeys.best_net: None,
                 ScenAppStateKeys.discarded: set(),
+                ScenAppStateKeys.supps: set(),
+                ScenAppStateKeys.compression_set_size: 0,
                 ScenAppStateKeys.convex: self.config.CONVEX_NET,
                 ScenAppStateKeys.discrete: self.config.TIME_DOMAIN != TimeDomain.CONTINUOUS,
                 }
@@ -694,6 +702,10 @@ class DoubleScenApp(SingleScenApp):
                 state["supps"] = outputs["new_supps"]
             else:
                 state["supps"] = state["supps"].union(outputs["new_supps"])
+                
+            if "compression_set_size" in outputs and self.config.TRACK_COMPRESSION_SET:
+                state[ScenAppStateKeys.compression_set_size] = outputs["compression_set_size"]
+                
             state = self.update_controller(state)
 
             # Translator component
@@ -765,6 +777,10 @@ class DoubleScenApp(SingleScenApp):
         a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
         post_time = perf_counter()-pre_post
         print("Direct risk calculation time: {:.5f}s".format(post_time))
+        
+        if "final_compression_set_size" in state:
+            print(f"Final compression set size: {state['final_compression_set_size']}")
+        
         self._result = Result(state[ScenAppStateKeys.bounds], a_post_eps, state[ScenAppStateKeys.best_net], stats)
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result

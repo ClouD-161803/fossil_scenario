@@ -192,6 +192,7 @@ class ScenAppConfig:
     VERIFIER: VerifierType = VerifierType.SCENAPPNONCONVEX
     CONVEX_NET: bool = False
     CALC_DISC_GAP: bool = False
+    TRACK_COMPRESSION_SET: bool = True
     #CONSOLIDATOR: ConsolidatorType = ConsolidatorType.DEFAULT
     #TRANSLATOR: TranslatorType = TranslatorType.CONTINUOUS
     N_DATA: int = 500
@@ -261,6 +262,7 @@ class ScenAppStateKeys:
     discarded = "discarded"
     convex = "convex"
     discrete = "discrete"
+    compression_set_size = "compression_set_size"
 
 
 class ScenAppComponentsState:
