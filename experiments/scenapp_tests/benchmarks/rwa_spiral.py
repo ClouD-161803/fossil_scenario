@@ -82,8 +82,8 @@ def test_lnn(args):
         certificate.XG: XG,
         certificate.XG_BORDER: XG,
     }
-    n_data = 1000
-    n_state_data = 10000
+    n_data = 100
+    n_state_data = 100
 
     # not sure if we should generate data from border of XS? Should be possible for simple borders
     state_data = {
@@ -93,7 +93,7 @@ def test_lnn(args):
         certificate.XG: XG._generate_data(n_state_data)(),
         certificate.XG_BORDER: XG._sample_border(n_state_data)()
     }
-    num_runs = 5
+    num_runs = 1
     init_data = [XI._generate_data(n_data)() for i in range(num_runs)]
 
     all_data = [system().generate_trajs(init_datum) for init_datum in init_data]

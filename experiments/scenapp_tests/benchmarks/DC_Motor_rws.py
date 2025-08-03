@@ -17,6 +17,7 @@ import random
 import numpy as np
 import torch
 
+# Set seed for reproducibility
 claudio_seed = 42
 random.seed(claudio_seed)
 np.random.seed(claudio_seed)
@@ -30,30 +31,47 @@ def solve(opts):
 
 
 def test_lnn(args):
-    XD = domains.Rectangle((0.1, 0.1), (0.5, 1))
-    XI = domains.Rectangle((0.1, 0.1), (0.4, 0.55))
-    XU = domains.Rectangle((0.45, 0.6), (0.5, 1))
+    # Define domains for RWS certificate
+    XD = domains.Rectangle(tuple([0.1, 0.1]), tuple([0.5, 1]))
+    XI = domains.Rectangle(tuple([0.1, 0.1]), tuple([0.4, 0.55]))
+    
+    # Define the goal region for RWS certificate
+    XG = domains.Rectangle(tuple([0.15, 0.8]), tuple([0.25, 0.9]))
+    
+    # Define the unsafe region
+    XU = domains.Rectangle(tuple([0.45, 0.6]), tuple([0.5, 1]))
+    
+    # Define the safe region as the domain minus the unsafe region
+    XS = domains.SetMinus(XD, XU)
 
     n_trajectory_data = 10
     n_background_data = 50
     num_runs = 1
 
+    # Define sets for RWS certificate
     sets = {
         certificate.XD: XD,
         certificate.XI: XI,
-        certificate.XU: XU,
+        certificate.XS: XS,
+        certificate.XS_BORDER: XS,  # Border of safe set
+        certificate.XG: XG,
+        certificate.XG_BORDER: XG,  # Border of goal set
     }
+    
+    # Generate state data for all required regions
     state_data = {
         certificate.XD: XD._generate_data(n_background_data)(),
         certificate.XI: XI._generate_data(n_background_data)(),
-        certificate.XU: XU._generate_data(n_background_data)(),
+        certificate.XS_BORDER: XS._sample_border(n_background_data)(),
+        certificate.XG: XG._generate_data(n_background_data)(),
+        certificate.XG_BORDER: XG._sample_border(n_background_data)()
     }
-    init_data = [XI._generate_data(
-        n_trajectory_data)() for i in range(num_runs)]
+    
+    init_data = [XI._generate_data(n_trajectory_data)() for i in range(num_runs)]
 
     system = models.DC_Motor
-    all_data = [system().generate_trajs(
-        init_datum) for init_datum in init_data]
+    system.time_horizon = 100  # Set time horizon for RWS
+    all_data = [system().generate_trajs(init_datum) for init_datum in init_data]
 
     data = [{"states_only": state_data,
              "full_data":
@@ -61,17 +79,18 @@ def test_lnn(args):
               "states": all_datum[1],
               "derivs": all_datum[2]}} for all_datum in all_data]
     
-    activations = [ActivationType.SIGMOID]
-    #activations = [ActivationType.RELU]
+    # Define NN parameters
+    activations = [ActivationType.SIGMOID, ActivationType.SIGMOID]
     hidden_neurons = [5] * len(activations)
+    
     opts = [ScenAppConfig(
         N_VARS=2,
         SYSTEM=system,
         DOMAINS=sets,
         DATA=datum,
         N_DATA=n_trajectory_data,
-        BETA=(0.01,),
-        CERTIFICATE=CertificateType.RWS,
+        N_TEST_DATA=n_background_data,
+        CERTIFICATE=CertificateType.RWS,  # Use RWS certificate
         TIME_DOMAIN=TimeDomain.DISCRETE,
         ACTIVATION=tuple(activations),
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
@@ -81,6 +100,7 @@ def test_lnn(args):
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
     ) for datum in data]
+    
     with Pool(processes=num_runs) as pool:
         res = pool.map(solve, opts)
     
@@ -97,15 +117,6 @@ def test_lnn(args):
         for i, result in enumerate(res):
             rec = analysis.Recorder()
             rec.record(opts[i], result, 0)
-            
-    # for cfg in opts:
-    #     main.run_benchmark(
-    #         cfg,
-    #         record=args.record,
-    #         plot=args.plot,
-    #         concurrent=args.concurrent,
-    #         repeat=args.repeat,
-    #     )
 
 
 if __name__ == "__main__":

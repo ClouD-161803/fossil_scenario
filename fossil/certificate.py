@@ -233,6 +233,7 @@ class Certificate:
         best_net: Union[learner.LearnerNN, None] = None,
         f_torch=None,
         discrete: bool = False,
+        compression_set: Union[set, None] = None,
     ) -> dict:
         """
         Learns a certificate.
@@ -492,13 +493,15 @@ class Practical_Lyapunov(Certificate):
         best_loss: float = float('inf'),
         best_net: Union[learner.LearnerNN, None] = None,
         f_torch=None,
-        discrete: bool = False
+        discrete: bool = False,
+        compression_set: Union[set, None] = None
     ) -> dict:
         """
         :param learner: learner object
         :param optimizer: torch optimiser
         :param S: dict of tensors of data
         :param Sdot: dict of tensors containing f(data)
+        :param compression_set: Optional set to track compression set across calls
         :return: --
         """
         torch.set_num_threads(8)
@@ -530,7 +533,8 @@ class Practical_Lyapunov(Certificate):
         assert times is not None, "times must be provided"
         time_tensor = times[XD]
 
-        supp_samples = set()
+        supp_samples = compression_set if compression_set is not None else set()
+        
         state_sol = False
         best_supp_defd = False
         for t in range(learn_loops):
@@ -627,7 +631,13 @@ class Practical_Lyapunov(Certificate):
         best_net = safe_set_beta(best_net, beta)
         
         supp_samples.discard(-1)
-        return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
+        return {
+            ScenAppStateKeys.loss: max_loss, 
+            "best_loss": best_loss, 
+            "best_net": best_net, 
+            "compression_set": supp_samples,
+            "compression_set_size": len(supp_samples)
+        }
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
         req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal_border"]).min()) / self.T
@@ -1194,12 +1204,14 @@ class RWS(Certificate):
         best_net: Union[learner.LearnerNN, None] = None,
         f_torch = None,
         discrete: bool = False,
+        compression_set: Union[set, None] = None,
     ) -> dict:
         """
         :param learner: learner object
         :param optimizer: torch optimiser
         :param S: dict of tensors of data
         :param Sdot: dict of tensors containing f(data)
+        :param compression_set: Optional set to track compression set across calls
         :return: --
         """
         torch.set_num_threads(8)
@@ -1232,7 +1244,9 @@ class RWS(Certificate):
         if times is not None and not isinstance(times, dict):
             raise TypeError("times must be a dict[str, torch.Tensor] or None")
         times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
-        supp_samples = set()
+        
+        supp_samples = compression_set if compression_set is not None else set()
+        
         state_sol = False
         best_supp_defd = False
         for t in range(learn_loops):
@@ -1361,7 +1375,13 @@ class RWS(Certificate):
         best_loss = losses[max_k]
         supp_samples = supp_samples.union(set([max_k]))
         best_net = safe_set_beta(best_net, beta)
-        return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
+        return {
+            ScenAppStateKeys.loss: max_loss, 
+            "best_loss": best_loss, 
+            "best_net": best_net, 
+            "compression_set": supp_samples,
+            "compression_set_size": len(supp_samples)
+        }
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
         if self.D is None or self.D.get(XI) is None or self.D.get(XG) is None or self.D.get(XS) is None:
@@ -1506,6 +1526,8 @@ class RSWS(RWS):
         best_net: Union['learner.LearnerNN', None] = None,
         f_torch=None,
         discrete: bool = False,
+        compression_set: Union[set, None] = None,
+        *,  # Keyword-only arguments after this
         convex: bool = True,
     ) -> dict:
         """
@@ -1513,6 +1535,8 @@ class RSWS(RWS):
         :param optimizer: torch optimiser
         :param S: dict of tensors of data
         :param Sdot: dict of tensors containing f(data)
+        :param compression_set: Optional set to track compression set across calls
+        :param convex: Whether to use convex optimization approach
         :return: --
         """
         assert len(S) == len(Sdot)
@@ -1549,7 +1573,9 @@ class RSWS(RWS):
         if times is not None and not isinstance(times, dict):
             raise TypeError("times must be a dict[str, torch.Tensor] or None")
         times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
-        supp_samples = set()
+        
+        supp_samples = compression_set if compression_set is not None else set()
+        
         for t in range(learn_loops):
             optimizer.zero_grad()
 
@@ -1726,6 +1752,7 @@ class DoubleCertificate(Certificate):
         best_net: Union['learner.LearnerNN', None] = None,
         f_torch=None,
         discrete: bool = False,
+        compression_set: Union[set, None] = None,
     ) -> dict:
         # Not implemented for DoubleCertificate
         raise NotImplementedError("DoubleCertificate.learn is not implemented.")

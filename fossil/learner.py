@@ -191,7 +191,7 @@ class LearnerNN(nn.Module, Learner):
             kw[ScenAppStateKeys.best_net],
             f_torch,
             discrete,
-            compression_set,
+            compression_set=compression_set,  # Pass as keyword argument
             convex=convex  # Pass as keyword argument
         )
         

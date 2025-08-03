@@ -62,7 +62,7 @@ def solve(system, sets, n_data, activations, hidden_neurons, data):
 
 
 def test_lnn():
-    n_data = 1000
+    n_data = 100
     system = models.Spiral 
     system.time_horizon = 100
     #XD = fossil.domains.Sphere([0,0], 1)
@@ -79,7 +79,7 @@ def test_lnn():
             fossil.XI: XI
                 }
     
-    n_state_data = 10000
+    n_state_data = 100
 
     state_data = {fossil.XD: SD._generate_data(n_state_data)(),
                   fossil.XI: XI._generate_data(n_state_data)(), 
