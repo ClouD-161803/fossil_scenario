@@ -817,6 +817,7 @@ class BarrierAlt(Certificate):
         :param compression_set: Optional set to track compression set across calls
         :return: --
         """
+        # print(f"DEBUG: BarrierAlt.learn received compression_set={compression_set}, size={len(compression_set) if compression_set else 0}")
 
         learn_loops = 1000
         condition_old = False

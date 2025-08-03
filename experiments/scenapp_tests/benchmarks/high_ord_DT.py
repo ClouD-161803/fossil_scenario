@@ -3,9 +3,26 @@ from experiments.scenapp_tests.benchmarks import models
 from fossil import domains
 from fossil import certificate
 from fossil import main, control
+from fossil import analysis
+from fossil import plotting
 from fossil.scenapp import ScenApp, Result
-from fossil.consts import *
+from fossil.consts import (
+    ActivationType,
+    ScenAppConfig,
+    CertificateType,
+    TimeDomain,
+    VerifierType,
+)
 from multiprocessing import Pool
+import random
+import numpy as np
+import torch
+
+# Set seed for reproducibility
+claudio_seed = 42
+random.seed(claudio_seed)
+np.random.seed(claudio_seed)
+torch.manual_seed(claudio_seed)
 
 def solve(opts):
     PAC = ScenApp(opts)
@@ -17,11 +34,11 @@ def test_lnn(args):
     f = models.HighOrd8DT
     n_vars = f.n_vars
 
-    XD = domains.Rectangle([-2.2] * n_vars, [2.2] * n_vars)
+    XD = domains.Rectangle(tuple([-2.2] * n_vars), tuple([2.2] * n_vars))
     # XD = domains.Sphere([0] * n_vars, 2)
-    XI = domains.Rectangle([0.9] * n_vars, [1.1] * n_vars)
+    XI = domains.Rectangle(tuple([0.9] * n_vars), tuple([1.1] * n_vars))
     # XI = domains.Sphere([1] * n_vars, 0.1)
-    XU = domains.Rectangle([-2.2] * n_vars, [-1.8] * n_vars)
+    XU = domains.Rectangle(tuple([-2.2] * n_vars), tuple([-1.8] * n_vars))
     # XU = domains.Sphere([-2] * n_vars, 0.2)
     sets = {
         certificate.XD: XD,
@@ -30,9 +47,9 @@ def test_lnn(args):
         certificate.XU: XU,
         # certificate.XG: XG,
     }
-    n_data = 1000
-    num_runs = 5
-    n_state_data = 500 
+    n_data = 5000
+    num_runs = 1
+    n_state_data = 5000 
     sets = {
         certificate.XD: XD,
         certificate.XI: XI,
@@ -51,7 +68,7 @@ def test_lnn(args):
 
     # define NN parameters
     activations = [ActivationType.LINEAR, ActivationType.SIGMOID]
-    n_hidden_neurons = [10] * len(activations)
+    hidden_neurons = [10] * len(activations)
 
     opts = [ScenAppConfig(
         DOMAINS=sets,
@@ -63,14 +80,29 @@ def test_lnn(args):
         CERTIFICATE=CertificateType.BARRIERALT,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
-        ACTIVATION=activations,
-        N_HIDDEN_NEURONS=n_hidden_neurons,
+        ACTIVATION=tuple(activations),
+        N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
+        SEED=claudio_seed,
     ) for datum in data]
 
     
     with Pool(processes=num_runs) as pool:
         res = pool.map(solve, opts)
+    
+    if args.plot:
+        axes = plotting.benchmark(
+            system(), res[-1].cert,
+            domains=opts[-1].DOMAINS,
+            xrange=[-2.2, 2.2], yrange=[-2.2, 2.2]
+        )
+        for ax, name in axes:
+            plotting.save_plot_with_tags(ax, opts[-1], name)
+
+    if args.record:
+        for i, result in enumerate(res):
+            rec = analysis.Recorder()
+            rec.record(opts[i], result, 0)
     
     #main.run_benchmark(
     #    opts,

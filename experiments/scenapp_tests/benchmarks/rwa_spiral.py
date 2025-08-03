@@ -11,10 +11,26 @@ from fossil import domains
 from fossil import plotting
 from fossil import certificate
 from fossil import main, control
-from fossil.consts import *
+from fossil import analysis
+from fossil.consts import (
+    ActivationType,
+    ScenAppConfig,
+    CertificateType,
+    TimeDomain,
+    VerifierType,
+)
+import random
+import numpy as np
+import torch
 from functools import partial
 from multiprocessing import Pool
 from fossil.scenapp import ScenApp, Result
+
+# Set seed for reproducibility
+claudio_seed = 42
+random.seed(claudio_seed)
+np.random.seed(claudio_seed)
+torch.manual_seed(claudio_seed)
 
 def solve(system, sets, n_data, activations, hidden_neurons, data):
     opts = ScenAppConfig(
@@ -27,10 +43,11 @@ def solve(system, sets, n_data, activations, hidden_neurons, data):
         CERTIFICATE=CertificateType.RWS,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
-        ACTIVATION=activations,
-        N_HIDDEN_NEURONS=hidden_neurons,
+        ACTIVATION=tuple(activations),
+        N_HIDDEN_NEURONS=(hidden_neurons[0],),
         VERBOSE=0,
         SCENAPP_MAX_ITERS=2500,
+        SEED=claudio_seed,
     )
     PAC = ScenApp(opts)
     result = PAC.solve()
@@ -46,11 +63,11 @@ def test_lnn(args):
     system = models.Spiral
     system.time_horizon = 100
 
-    XD = domains.Rectangle([-5, -5], [5, 5])
-    XI = domains.Rectangle([-1, 4], [1, 4.5])
-    SU = domains.Rectangle([-5,-1],[-4.5,1])
+    XD = domains.Rectangle(tuple([-5, -5]), tuple([5, 5]))
+    XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
+    SU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
     
-    XG = domains.Sphere([0,0],1.0)
+    XG = domains.Sphere(tuple([0,0]),1.0)
 
     # Need to have XD does not contain XG (at least for data generation) otherwise might have conflicting requirements on states????
     #SU = domains.SetMinus(XD, XS)  # Data for unsafe set
@@ -109,12 +126,13 @@ def test_lnn(args):
         CERTIFICATE=CertificateType.RWS,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         #VERIFIER=VerifierType.DREAL,
-        ACTIVATION=activations,
-        N_HIDDEN_NEURONS=n_hidden_neurons,
+        ACTIVATION=tuple(activations),
+        N_HIDDEN_NEURONS=(n_hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
         SCENAPP_MAX_ITERS=2500,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
+        SEED=claudio_seed,
         #CONVEX_NET=True,
     )
     axes = plotting.benchmark(
