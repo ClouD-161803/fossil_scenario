@@ -436,9 +436,9 @@ class SingleScenApp:
             state = {**state, **outputs}
             
             if self.config.CONVEX_NET:
-                state["supps"] = outputs["new_supps"]
+                state["supps"] = outputs.get("compression_set", outputs.get("new_supps", state["supps"]))
             else:
-                state["supps"] = state["supps"].union(outputs["new_supps"])
+                state["supps"] = state["supps"].union(outputs.get("compression_set", outputs.get("new_supps", set())))
             state = self.update_controller(state)
 
             if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:

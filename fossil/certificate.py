@@ -935,10 +935,10 @@ class BarrierAlt(Certificate):
         supp_samples.discard(-1)
         
         return {
-            ScenAppStateKeys.loss: max_loss, 
-            "best_loss": best_loss, 
-            "best_net": best_net, 
-            "new_supps": supp_samples,
+            ScenAppStateKeys.loss: max_loss,
+            "best_loss": best_loss,
+            "best_net": best_net,
+            "compression_set": supp_samples,
             "compression_set_size": len(supp_samples)
         }
 
