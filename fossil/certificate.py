@@ -48,6 +48,23 @@ ORDER = (XD, XI, XU, XS, XG, XG_BORDER, XS_BORDER, XF, XNF)
 cert_log = logger.Logger.setup_logger(__name__)
 
 
+def safe_set_beta(learner_obj, beta_value):
+    """Safely set the beta attribute on a learner object if it has that attribute.
+    
+    Args:
+        learner_obj: The learner object that may have a beta attribute
+        beta_value: The value to assign to the beta attribute
+        
+    Returns:
+        The learner object with beta potentially updated
+    """
+    if hasattr(learner_obj, 'beta'):
+        if isinstance(beta_value, torch.Tensor):
+            beta_value = beta_value.item()
+        learner_obj.beta = beta_value
+    return learner_obj
+
+
 def log_loss_acc(t, loss, accuracy, verbose):
     # cert_log.debug(t, "- loss:", loss.item())
     # for k, v in accuracy.items():
@@ -97,6 +114,112 @@ class Certificate:
         Subclasses should override this method to provide specific beta estimation.
         """
         return None
+        
+    def subsurface_algorithm(
+        self,
+        losses: dict,
+        supp_loss: Union[torch.Tensor, int],
+        supp_samples: set,
+        best_loss: float,
+        learner,
+        optimizer,
+        discrete: bool = False,
+        beta: Union[torch.Tensor, float, None] = None
+    ) -> tuple[bool, bool, set, float, Union[learner.LearnerNN, None]]:
+        """
+        Centralized implementation of the subsurface algorithm used across certificate types.
+        
+        Args:
+            losses: Dictionary mapping sample indices to their loss values
+            supp_loss: Loss for the support set or -1 if not defined
+            supp_samples: Set of indices in the support set
+            best_loss: Current best loss value
+            learner: Neural network learner
+            optimizer: Optimizer used for training
+            discrete: Whether the system is discrete-time
+            beta: Beta parameter for certificates that use it
+            
+        Returns:
+            tuple containing:
+                - break_flag: Whether to break the training loop
+                - new_supp_added: Whether a new sample was added to the support set
+                - updated_supp_samples: Updated support sample set
+                - updated_best_loss: Updated best loss value
+                - updated_best_net: Updated best network (if improved)
+        """
+        break_flag = False
+        new_supp_added = False
+        updated_best_loss = best_loss
+        updated_best_net = None
+        
+        sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
+        max_loss = losses[sorted_keys[0]]
+        
+        if supp_loss != -1:
+            supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
+            if supp_loss_float < best_loss:
+                updated_best_loss = supp_loss_float
+                updated_best_net = copy.deepcopy(learner)
+                if beta is not None:
+                    updated_best_net = safe_set_beta(updated_best_net, beta)
+            
+            optimizer.zero_grad()
+            
+            # Line 17: If (supp_loss - best_loss) >= η, add new sample to C
+            if (supp_loss_float - best_loss) >= 1e-1:
+                if sorted_keys[0] in supp_samples:
+                    break_flag = True
+                else:
+                    # Line 19: C ← C ∪ {ξ̄}
+                    supp_samples.add(sorted_keys[0])
+                    new_supp_added = True
+                    if isinstance(max_loss, torch.Tensor):
+                        max_loss.backward()
+        
+            elif discrete and supp_loss_float <= 0:
+                if max_loss <= 0:
+                    updated_best_loss = supp_loss_float
+                    updated_best_net = copy.deepcopy(learner)
+                    if beta is not None:
+                        updated_best_net = safe_set_beta(updated_best_net, beta)
+                    break_flag = True
+                else:
+                    max_loss.backward()
+                    supp_samples.add(sorted_keys[0])
+                    new_supp_added = True
+            
+            else:
+                # Line 13: Subgradients of loss for samples in M
+                new_supp = False
+                if isinstance(supp_loss, torch.Tensor):
+                    supp_loss.backward(retain_graph=True)
+                    supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                    
+                    # Line 15: If there is a misaligned subgradient (inner ≤ 0)
+                    for k in sorted_keys:
+                        optimizer.zero_grad()
+                        losses[k].backward(retain_graph=True)
+                        grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                        inner = torch.inner(grads, supp_grads)
+                        
+                        if inner <= 0:
+                            # Line 19: C ← C ∪ {ξ̄}
+                            supp_samples.add(k)
+                            new_supp_added = True
+                            break
+                    
+                    if not new_supp_added:
+                        optimizer.zero_grad()
+                        supp_loss.backward()
+        else:
+            # Line 18: If no sample exceeds compression set, use max loss
+            # Line 19: C ← C ∪ {ξ̄}
+            supp_samples.add(sorted_keys[0])
+            new_supp_added = True
+            optimizer.zero_grad()
+            max_loss.backward()
+        
+        return break_flag, new_supp_added, supp_samples, updated_best_loss, updated_best_net
 
     def learn(
         self,
@@ -434,53 +557,17 @@ class Practical_Lyapunov(Certificate):
 
                 if t % 100 == 0 or t == learn_loops - 1:
                     log_loss_acc(t, max_loss, learn_accuracy, learner.verbose)
-                if supp_loss != -1:
-                    supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
-                    if supp_loss_float < best_loss:
-                        best_loss = supp_loss_float
-                        best_net = copy.deepcopy(learner)
-                        best_net.beta = beta.item()
-                    optimizer.zero_grad()
-                    if (supp_loss_float-best_loss) >= 1e-1: 
-                        if sorted_keys[0] in supp_samples:
-                            break
-                        else:
-                            supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                            if isinstance(max_loss, torch.Tensor):
-                                max_loss.backward()
-                        
-                    elif discrete and supp_loss_float <= 0:
-                        if max_loss <= 0:
-                            best_loss = supp_loss_float
-                            best_net = copy.deepcopy(learner)
-                            best_net.beta = beta.item()
-                            break
-                        else:
-                            max_loss.backward()
-                            supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                    else: 
-                        new_supp = False
-                        if isinstance(supp_loss, torch.Tensor):
-                            if isinstance(supp_loss, torch.Tensor):
-                                supp_loss.backward(retain_graph=True)
-                            supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                            for k in sorted_keys:
-                                optimizer.zero_grad()
-                                losses[k].backward(retain_graph=True)
-                                grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                                inner = torch.inner(grads, supp_grads)
-                                #if torch.abs(supp_loss-prev_supp_loss) < 1e-10: #convergence of support loss check
-                                if inner <= 0:
-                                    supp_samples = supp_samples.union(set([k]))
-                                    new_supp = True
-                                    break
-                        if not new_supp:
-                            optimizer.zero_grad()
-                            if isinstance(supp_loss, torch.Tensor):
-                                if isinstance(supp_loss, torch.Tensor):
-                                    supp_loss.backward()
-                else:
-                    supp_samples = supp_samples.union(set([sorted_keys[0]]))
+
+                break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
+                    losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete, beta
+                )
+                
+                if updated_best_net is not None:
+                    best_net = updated_best_net
+                
+                if break_flag:
+                    break
+                    
                 optimizer.step()
             else:
                 state_itt = 0
@@ -537,7 +624,7 @@ class Practical_Lyapunov(Certificate):
         best_loss = losses[max_k]
         
         supp_samples = supp_samples.union(set([max_k]))
-        best_net.beta = beta.item()
+        best_net = safe_set_beta(best_net, beta)
         
         supp_samples.discard(-1)
         return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
@@ -775,54 +862,17 @@ class BarrierAlt(Certificate):
 
                 if (t % int(learn_loops / 10) == 0 or learn_loops - t < 10) or t == 1:
                     log_loss_acc(t, max_loss, accuracy, learner.verbose)
-                #grads = []
-                # Code below is for non-convex
-                if supp_loss != -1:
-                    supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
-                    if supp_loss_float < best_loss:
-                        best_loss = supp_loss_float
-                        best_net = copy.deepcopy(learner)
-                    optimizer.zero_grad()
-                    # Line 17: If (supp_loss - best_loss) >= η, add new sample to C
-                    if (supp_loss_float-best_loss) >= 1e-1: 
-                        if sorted_keys[0] in supp_samples:
-                            break
-                        else:
-                            # Line 19: C ← C ∪ {ξ̄}
-                            supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                            max_loss.backward()
-                        
-                    elif discrete and supp_loss_float <= 0:
-                        if max_loss <= 0:
-                            break
-                        else:
-                            max_loss.backward()
-                            supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                    else: 
-                        new_supp = False
-                        max_loss.backward(retain_graph=True)
-                        supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                        # Line 15: If there is a misaligned subgradient (inner ≤ 0)
-                        for k in sorted_keys:
-                            optimizer.zero_grad()
-                            losses[k].backward(retain_graph=True)
-                            grad = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                            inner = torch.inner(grad, supp_grads)
-                            if inner <= 0:
-                                new_supp = True
-                                # Line 19: C ← C ∪ {ξ̄}
-                                supp_samples = supp_samples.union(set([k]))
-                                break
-                        if not new_supp:
-                            optimizer.zero_grad()
-                            if isinstance(supp_loss, torch.Tensor):
-                                supp_loss.backward()
-                else:
-                    # Line 19: C ← C ∪ {ξ̄}
-                    supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                    optimizer.zero_grad()
-                    max_loss.backward()
-                # Convert supp_loss to float regardless of the path taken
+                
+                break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
+                    losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete
+                )
+                
+                if updated_best_net is not None:
+                    best_net = updated_best_net
+                
+                if break_flag:
+                    break
+
                 supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
                 prev_supp_loss = supp_loss_float
                 optimizer.step()
@@ -1190,55 +1240,72 @@ class RWS(Certificate):
                 max_loss = losses[sorted_keys[0]]
                 if (t-1) % int(learn_loops / 100) == 0 or learn_loops - t < 10:
                     log_loss_acc(t, max_loss, accuracy, learner.verbose)
+                
+                sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
+                max_loss = losses[sorted_keys[0]]
+                break_flag = False
+                
                 if supp_loss != -1:
                     supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
                     if supp_loss_float < best_loss:
                         best_loss = supp_loss_float
                         best_net = copy.deepcopy(learner)
-                        best_net.beta = beta.item()
+                        best_net = safe_set_beta(best_net, beta)
+                    
                     optimizer.zero_grad()
-                    if (supp_loss_float-best_loss) >= 1e-1: 
+                    prev_supp_loss = supp_loss_float
+                    
+                    # If (supp_loss - best_loss) >= η, add new sample to C
+                    if (supp_loss_float - best_loss) >= 1e-1:
                         if sorted_keys[0] in supp_samples:
-                            break
+                            break_flag = True
                         else:
-                            supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                            max_loss.backward()
+                            # C ← C ∪ {ξ̄}
+                            supp_samples.add(sorted_keys[0])
+                            if isinstance(max_loss, torch.Tensor):
+                                max_loss.backward()
                     elif discrete and supp_loss_float <= 0:
                         if max_loss <= 0:
-                            break
+                            best_loss = supp_loss_float
+                            best_net = copy.deepcopy(learner)
+                            best_net = safe_set_beta(best_net, beta)
+                            break_flag = True
                         else:
                             max_loss.backward()
-                            supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                    else: 
+                            supp_samples.add(sorted_keys[0])
+                    else:
+                        # Subgradients of loss for samples in M
                         new_supp = False
-                        max_loss.backward(retain_graph=True)
-                        supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                        #inners = grads@supp_grads
-                        #misaligneds = (inners <= 0).nonzero()
-                        #if len(misaligneds) > 0:
-                        #    max_sample = sorted_keys[misaligneds[0]]
-                        #    supp_samples = supp_samples.union(set([max_sample]))
-                        #    optimizer.zero_grad()
-                        #    losses[max_sample].backward()
-                        for k in sorted_keys:
-                            optimizer.zero_grad()
-                            losses[k].backward(retain_graph=True)
-                            grad = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
-                            inner = torch.inner(grad, supp_grads)
-                            #if torch.abs(supp_loss-prev_supp_loss) < 1e-10: #convergence of support loss check
-                            if inner <= 0:
-                                new_supp = True
-                                supp_samples = supp_samples.union(set([k]))
-                                break
-                        if not new_supp:
-                            optimizer.zero_grad()
-                            if isinstance(supp_loss, torch.Tensor):
+                        if isinstance(supp_loss, torch.Tensor):
+                            supp_loss.backward(retain_graph=True)
+                            supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                            
+                            # If there is a misaligned subgradient (inner ≤ 0)
+                            for k in sorted_keys:
+                                optimizer.zero_grad()
+                                losses[k].backward(retain_graph=True)
+                                grad = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                                inner = torch.inner(grad, supp_grads)
+                                
+                                if inner <= 0:
+                                    # C ← C ∪ {ξ̄}
+                                    supp_samples.add(k)
+                                    new_supp = True
+                                    break
+                            
+                            if not new_supp:
+                                optimizer.zero_grad()
                                 supp_loss.backward()
                 else:
-                    supp_samples = supp_samples.union(set([sorted_keys[0]]))
-                    optimizer.zero_grad()
+                    # If no sample exceeds compression set, use max loss
+                    # C ← C ∪ {ξ̄}
+                    supp_samples.add(sorted_keys[0])
                     if isinstance(max_loss, torch.Tensor):
                         max_loss.backward()
+                
+                if break_flag:
+                    break
+                
                 optimizer.step()
             else:
                 state_itt = 0
@@ -1278,7 +1345,7 @@ class RWS(Certificate):
         max_loss = losses[max_k]
         best_loss = losses[max_k]
         supp_samples = supp_samples.union(set([max_k]))
-        best_net.beta = beta.item()
+        best_net = safe_set_beta(best_net, beta)
         return {ScenAppStateKeys.loss: max_loss, "best_loss":best_loss, "best_net":best_net, "new_supps": supp_samples}
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
@@ -1514,7 +1581,7 @@ class RSWS(RWS):
             if loss <= best_loss:
                 best_loss = loss
                 best_net = copy.deepcopy(learner)
-                best_net.beta = beta.item()
+                best_net = safe_set_beta(best_net, beta)
 
             if t % int(learn_loops / 10) == 0 or learn_loops - t < 10:
                 log_loss_acc(t, loss, accuracy, learner.verbose)
@@ -1570,7 +1637,7 @@ class RSWS(RWS):
         if loss <= best_loss:
             best_loss = loss
             best_net = copy.deepcopy(learner)
-            best_net.beta = beta.item()
+            best_net = safe_set_beta(best_net, beta)
 
         return {ScenAppStateKeys.loss: loss, "best_loss":best_loss, "best_net":best_net, "new_supps":supp_samples}
 
