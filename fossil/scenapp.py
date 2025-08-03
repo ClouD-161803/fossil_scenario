@@ -168,7 +168,41 @@ class SingleScenApp:
 
     def update_controller(self, state):
         scenapp_log.debug("Updating controller does nothing")
-        return state 
+        return state
+
+    def calculate_compression_set_size(self, state):
+        """
+        Calculate the compression set size based on support samples.
+        
+        Args:
+            state: Current state dictionary containing support information
+            
+        Returns:
+            int: The calculated compression set size
+        """
+        if isinstance(state["supps"], dict):
+            comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+        else:
+            comp_size = len(state["supps"].union(state["discarded"]))
+        return comp_size
+
+    def print_verification_info(self, state, include_discarded=False):
+        """
+        Print epsilon and compression set size information.
+        
+        Args:
+            state: Current state dictionary containing bounds and support information
+            include_discarded: Whether to include discarded samples count in the output
+        """
+        print(f"Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+        
+        comp_size = self.calculate_compression_set_size(state)
+        total_samples = self.config.N_DATA
+        
+        if include_discarded:
+            print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
+        else:
+            print(f"Compression set size: {comp_size}/{total_samples}") 
 
 
     def a_post_verify(self, cert, cert_deriv, n_data):
@@ -406,13 +440,7 @@ class SingleScenApp:
                 scenapp_log.debug("\033[1m Verifier \033[0m")
                 outputs = self.verifier.get(**state)
                 state = {**state, **outputs}
-                print(f"Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
-                if isinstance(state["supps"], dict):
-                    comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
-                else:
-                    comp_size = len(state["supps"].union(state["discarded"]))
-                total_samples = self.config.N_DATA
-                print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
+                self.print_verification_info(state, include_discarded=True)
                 stop = self.process_certificate(S, state, iters)
 
             elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
@@ -432,26 +460,14 @@ class SingleScenApp:
                         scenapp_log.debug("\033[1m Verifier \033[0m")
                         outputs = self.verifier.get(**state)
                         state = {**state, **outputs}
-                        print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
-                        if isinstance(state["supps"], dict):
-                            comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
-                        else:
-                            comp_size = len(state["supps"].union(state["discarded"]))
-                        total_samples = self.config.N_DATA
-                        print(f"Compression set size: {comp_size}/{total_samples}")
+                        self.print_verification_info(state)
                         stop = self.process_certificate(S, state, iters)
 
                 else:
                     scenapp_log.debug("\033[1m Verifier \033[0m")
                     outputs = self.verifier.get(**state)
                     state = {**state, **outputs}
-                    print(f"Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
-                    if isinstance(state["supps"], dict):
-                        comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
-                    else:
-                        comp_size = len(state["supps"].union(state["discarded"]))
-                    total_samples = self.config.N_DATA
-                    print(f"Compression set size: {comp_size}/{total_samples}")
+                    self.print_verification_info(state)
                     stop = self.process_certificate(S, state, iters)
             
             elif state[ScenAppStateKeys.verification_timed_out]:
@@ -692,14 +708,7 @@ class DoubleScenApp(SingleScenApp):
                 #scenapp_log.debug("\033[1m Consolidator \033[0m")
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
-                print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
-                # Compute and print compression set size
-                if isinstance(state["supps"], dict):
-                    comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
-                else:
-                    comp_size = len(state["supps"].union(state["discarded"]))
-                total_samples = self.config.N_DATA
-                print(f"Compression set size: {comp_size}/{total_samples}")
+                self.print_verification_info(state)
                 stop = self.process_certificate(S, state, iters)
 
             elif not self.config.CONVEX_NET and state["best_loss"] == 0.0:
@@ -713,14 +722,7 @@ class DoubleScenApp(SingleScenApp):
                 #scenapp_log.debug("\033[1m Consolidator \033[0m")
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
-                print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
-                # Compute and print compression set size
-                if isinstance(state["supps"], dict):
-                    comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
-                else:
-                    comp_size = len(state["supps"].union(state["discarded"]))
-                total_samples = self.config.N_DATA
-                print(f"Compression set size: {comp_size}/{total_samples}")
+                self.print_verification_info(state)
                 stop = self.process_certificate(S, state, iters)
 
             elif state[ScenAppStateKeys.verification_timed_out]:
