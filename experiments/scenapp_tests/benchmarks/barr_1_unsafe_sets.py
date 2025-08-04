@@ -19,6 +19,44 @@ from multiprocessing import Pool
 import random
 import numpy as np
 import torch
+import scipy
+import copy
+
+# Create a modified Barr1 model with correct functions for integration
+class Barr1Modified(models.Barr1):
+    n_vars = 2
+    time_horizon = 50
+    num_time_samples = 100
+    
+    def f_torch_wrapper(self, t, x):
+        """Wrapper for scipy.integrate.solve_ivp compatibility"""
+        if isinstance(x, np.ndarray):
+            x_tensor = torch.tensor(x, dtype=torch.float32)
+            result = self.f_torch(t, x_tensor)
+            return np.array(result)
+        return self.f_torch(t, x)
+    
+    def generate_trajs(self, x_0, time_horizon=None):
+        """Override to use our wrapper function"""
+        if time_horizon is None:
+            time_horizon = self.time_horizon
+            
+        trajs = []
+        for elem in x_0:
+            trajs.append(scipy.integrate.solve_ivp(
+                self.f_torch_wrapper, 
+                (0, time_horizon), 
+                elem.numpy(),
+                t_eval=np.linspace(0., time_horizon, self.num_time_samples)
+            ))
+            
+        state_trajs = [traj["y"] for traj in trajs]
+        times = [traj["t"] for traj in trajs]
+        nexts = [traj[:, 1:] for traj in state_trajs]
+        state_trajs = [traj[:, :-1] for traj in state_trajs]
+        times = [time[1:] - time[:-1] for time in times]
+        
+        return times, state_trajs, nexts
 
 # Set seed for reproducibility
 claudio_seed = 42
@@ -36,9 +74,9 @@ def solve(opts):
 class UnsafeDomain(domains.Set):
     dimension = 2
 
-    def generate_domain(self, v):
-        x, y = v
-        return x + y**2 <= 0
+    def generate_domain(self, x):
+        x1, x2 = x
+        return x1 + x2**2 <= 0
 
     def generate_data(self, batch_size):
         points = []
@@ -64,12 +102,12 @@ class UnsafeDomain(domains.Set):
 
 def test_lnn(args):
     # Define domains for BarrierAlt certificate
-    XD = domains.Rectangle([-2, -2], [2, 2])
-    XI = domains.Rectangle([0.25, -1], [1, 1])
+    XD = domains.Rectangle(tuple([-2, -2]), tuple([2, 2]))
+    XI = domains.Rectangle(tuple([0.25, -1]), tuple([1, 1]))
     XU = UnsafeDomain()
 
-    n_trajectory_data = 1000
-    n_background_data = 500
+    n_trajectory_data = 400
+    n_background_data = 1000
     num_runs = 1
     
     # Define sets for BarrierAlt certificate
@@ -88,15 +126,35 @@ def test_lnn(args):
     
     init_data = [XI._generate_data(n_trajectory_data)() for i in range(num_runs)]
 
-    system = models.Barr1
-    system.time_horizon = 100  # Set time horizon
-    all_data = [system().generate_trajs(init_datum) for init_datum in init_data]
+    # Use our modified Barr1 model
+    system = Barr1Modified
+    
+    # Generate trajectories with our custom model
+    all_data = []
+    trajectory_indices = []
+    
+    for init_datum in init_data:
+        model_instance = system()
+        traj_data = model_instance.generate_trajs(init_datum)
+        all_data.append(traj_data)
+        
+        # Create indices for trajectories
+        traj_length = traj_data[1][0].shape[1]
+        traj_indices = []
+        current_idx = 0
+        for i in range(len(traj_data[1])):
+            indices = list(range(current_idx, current_idx + traj_length))
+            traj_indices.append(indices)
+            current_idx += traj_length
+        trajectory_indices.append({"lie": traj_indices})
 
     data = [{"states_only": state_data,
              "full_data":
              {"times": all_datum[0],
               "states": all_datum[1],
-              "derivs": all_datum[2]}} for all_datum in all_data]
+              "derivs": all_datum[2]},
+             "indices": trajectory_indices[i]
+            } for i, all_datum in enumerate(all_data)]
     
     # Define NN parameters
     activations = [ActivationType.SIGMOID]
@@ -114,12 +172,12 @@ def test_lnn(args):
         ACTIVATION=tuple(activations),
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
-        VERBOSE=2 if args.verbose else 0,
-        SCENAPP_MAX_ITERS=2500,
+        VERBOSE=0,
+        SCENAPP_MAX_ITERS=20,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
-        MAX_JUMPS=5,
-        USE_APRIORI_JUMPS=True,
+        # MAX_JUMPS=1,
+        # USE_APRIORI_JUMPS=False
     ) for datum in data]
     
     with Pool(processes=num_runs) as pool:
