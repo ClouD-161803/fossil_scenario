@@ -444,9 +444,9 @@ class SingleScenApp:
                 scenapp_log.debug("\033[1m Verifier \033[0m")
                 outputs = self.verifier.get(**state)
                 state = {**state, **outputs}
-                self.print_verification_info(state, include_discarded=True)
                 stop = self.process_certificate(S, state, iters)
-
+                self.print_verification_info(state, include_discarded=True)
+                
             elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
                 
                 if self.config.CALC_DISC_GAP:
@@ -464,15 +464,15 @@ class SingleScenApp:
                         scenapp_log.debug("\033[1m Verifier \033[0m")
                         outputs = self.verifier.get(**state)
                         state = {**state, **outputs}
-                        self.print_verification_info(state)
                         stop = self.process_certificate(S, state, iters)
+                        self.print_verification_info(state)
 
                 else:
                     scenapp_log.debug("\033[1m Verifier \033[0m")
                     outputs = self.verifier.get(**state)
                     state = {**state, **outputs}
-                    self.print_verification_info(state)
                     stop = self.process_certificate(S, state, iters)
+                    self.print_verification_info(state)
             
             elif state[ScenAppStateKeys.verification_timed_out]:
                 scenapp_log.warning("Verification timed out")
@@ -719,8 +719,8 @@ class DoubleScenApp(SingleScenApp):
                 #scenapp_log.debug("\033[1m Consolidator \033[0m")
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
-                self.print_verification_info(state)
                 stop = self.process_certificate(S, state, iters)
+                self.print_verification_info(state)
 
             elif not self.config.CONVEX_NET and state["best_loss"] == 0.0:
                 scenapp_log.debug("\033[1m Verifier \033[0m")
@@ -733,8 +733,8 @@ class DoubleScenApp(SingleScenApp):
                 #scenapp_log.debug("\033[1m Consolidator \033[0m")
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
-                self.print_verification_info(state)
                 stop = self.process_certificate(S, state, iters)
+                self.print_verification_info(state)
 
             elif state[ScenAppStateKeys.verification_timed_out]:
                 scenapp_log.warning("Verification timed out")
