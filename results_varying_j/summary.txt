@@ -1,0 +1,7 @@
+Summary of barr_spiral runs with varying J values
+Parameters: beta=0.01, n_trajectory_data=100, n_background_data=100, max_iters=50, time_horizon=100, fixed_seed=54308950
+--------------------------------------------------
+J=6, Epsilon=0.18190213887486606, A-Post-Epsilon=0.08798916064409128, Iters=1, Compression Set Size=N/A
+J=5, Epsilon=0.16627516463340725, A-Post-Epsilon=0.08798916064409128, Iters=1, Compression Set Size=N/A
+J=4, Epsilon=0.14997846821323046, A-Post-Epsilon=0.08798916064409128, Iters=1, Compression Set Size=N/A
+J=3, Epsilon=0.1328068315284327, A-Post-Epsilon=0.08798916064409128, Iters=1, Compression Set Size=N/A

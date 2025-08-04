@@ -31,13 +31,14 @@ from functools import partial
 from multiprocessing import Pool
 
 
-def run_barr_spiral_with_j(args, j_value):
+def run_barr_spiral_with_j(args, j_value, summary_path):
     """
     Run barr_spiral benchmark with a specific J value (MAX_JUMPS)
     
     Args:
         args: Command line arguments
         j_value: Value for MAX_JUMPS parameter
+        summary_path: Path to the summary file for this run
         
     Returns:
         Result object from running the benchmark
@@ -120,19 +121,14 @@ def run_barr_spiral_with_j(args, j_value):
         rec = analysis.Recorder()
         rec.record(config, result, 0)
     
-    with open(f"results_varying_j/summary.txt", "a") as f:
-        comp_size = "N/A"
-        if hasattr(result.cert, 'compression_set_size'):
-            comp_size = result.cert.compression_set_size
-        
+    with open(summary_path, "a") as f:
         f.write(f"J={j_value}, Epsilon={result.res}, A-Post-Epsilon={result.a_post_res}, " + 
-                f"Iters={result.stats.iters}, Compression Set Size={comp_size}\n")
+                f"Iters={result.stats.iters}\n")
     
     print(f"Finished run with J={j_value}")
     print(f"Epsilon: {result.res}")
     print(f"A-Posteriori Epsilon: {result.a_post_res}")
     print(f"Iterations: {result.stats.iters}")
-    print(f"Compression Set Size: {comp_size}")
     print("-" * 50)
     
     return result
@@ -161,6 +157,10 @@ def parse_args():
 def main():
     args = parse_args()
     
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    summary_filename = f"summary_{timestamp}.txt"
+    full_summary_path = f"results_varying_j/{summary_filename}"
+    
     seed_info = f", fixed_seed={args.fixed_seed}" if args.fixed_seed else ""
     
     print(f"Starting barr_spiral runs with varying J values from {args.max_j} down to 1")
@@ -170,7 +170,7 @@ def main():
     print("-" * 50)
     
     os.makedirs("results_varying_j", exist_ok=True)
-    with open("results_varying_j/summary.txt", "w") as f:
+    with open(full_summary_path, "w") as f:
         f.write("Summary of barr_spiral runs with varying J values\n")
         f.write(f"Parameters: beta={args.beta}, n_trajectory_data={args.n_trajectory_data}, " +
                 f"n_background_data={args.n_background_data}, max_iters={args.scenapp_max_iters}, " +
@@ -180,24 +180,21 @@ def main():
     results = []
     for j in range(args.max_j, 0, -1):
         print(f"Running with J={j}")
-        result = run_barr_spiral_with_j(args, j)
+        result = run_barr_spiral_with_j(args, j, full_summary_path)
         results.append((j, result))
     
     print("Running with J=-1 (no limit)")
-    result = run_barr_spiral_with_j(args, -1)
+    result = run_barr_spiral_with_j(args, -1, full_summary_path)
     results.append((-1, result))
     
     print("\nSummary of all runs:")
     print("-" * 50)
-    print("J\tEpsilon\t\tA-Post-Epsilon\tIters\tComp. Set Size")
+    print("J\tEpsilon\t\tA-Post-Epsilon\tIters")
     print("-" * 50)
     for j, result in results:
-        comp_size = "N/A"
-        if hasattr(result.cert, 'compression_set_size'):
-            comp_size = result.cert.compression_set_size
-        print(f"{j}\t{result.res:.6f}\t{result.a_post_res:.6f}\t{result.stats.iters}\t{comp_size}")
+        print(f"{j}\t{result.res:.6f}\t{result.a_post_res:.6f}\t{result.stats.iters}")
     
-    print("\nResults saved to results_varying_j/summary.txt")
+    print(f"\nResults saved to {full_summary_path}")
 
 
 if __name__ == "__main__":

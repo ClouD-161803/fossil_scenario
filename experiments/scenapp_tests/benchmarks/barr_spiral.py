@@ -26,8 +26,10 @@ from fossil.consts import (
 from functools import partial
 from multiprocessing import Pool
 
-# Set seed for reproducibility
+import time
+# claudio_seed = int(time.time()) % 100000000
 claudio_seed = 42
+print(f"Using seed: {claudio_seed}")
 random.seed(claudio_seed)
 np.random.seed(claudio_seed)
 torch.manual_seed(claudio_seed)
@@ -42,10 +44,10 @@ def solve(opts):
 def test_lnn(args):
     XD = domains.Rectangle(tuple([-5, -5]), tuple([5, 5]))
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
-    XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
+    XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.2,1]))
 
-    n_trajectory_data = 100
-    n_background_data = 100
+    n_trajectory_data = 1000
+    n_background_data = 5000
     
     sets = {
         certificate.XD: XD,
@@ -82,6 +84,7 @@ def test_lnn(args):
         DATA=datum,
         N_DATA=n_trajectory_data,
         N_TEST_DATA=n_trajectory_data,
+        BETA=(0.01,),
         CERTIFICATE=CertificateType.BARRIERALT,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         #VERIFIER=VerifierType.DREAL,
@@ -89,10 +92,10 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
+        SCENAPP_MAX_ITERS=50,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
-        # MAX_JUMPS=1,
+        # MAX_JUMPS=4,
         # USE_APRIORI_JUMPS=True,
         #CONVEX_NET=True,
     ) for datum in data]
