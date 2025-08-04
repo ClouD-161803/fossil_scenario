@@ -164,6 +164,14 @@ class Certificate:
                             hasattr(self, 'max_jumps') and self.max_jumps > 0 and \
                             len(supp_samples) >= self.max_jumps
         
+        if max_jumps_reached:
+            break_flag = True
+            if updated_best_net is None:
+                updated_best_net = copy.deepcopy(learner)
+                if beta is not None:
+                    updated_best_net = safe_set_beta(updated_best_net, beta)
+            return break_flag, new_supp_added, supp_samples, updated_best_loss, updated_best_net
+        
         sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
         max_loss = losses[sorted_keys[0]]
         
@@ -179,7 +187,7 @@ class Certificate:
             
             # Line 17: If (supp_loss - best_loss) >= η, add new sample to C
             if (supp_loss_float - best_loss) >= 1e-1:
-                if sorted_keys[0] in supp_samples or max_jumps_reached:
+                if sorted_keys[0] in supp_samples:
                     break_flag = True
                 else:
                     # Line 19: C ← C ∪ {ξ̄}

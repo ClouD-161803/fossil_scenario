@@ -44,10 +44,10 @@ def solve(opts):
 def test_lnn(args):
     XD = domains.Rectangle(tuple([-5, -5]), tuple([5, 5]))
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
-    XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.2,1]))
+    XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
 
-    n_trajectory_data = 1000
-    n_background_data = 5000
+    n_trajectory_data = 10
+    n_background_data = 10000
     
     sets = {
         certificate.XD: XD,
@@ -92,10 +92,10 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=50,
+        SCENAPP_MAX_ITERS=20,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
-        # MAX_JUMPS=4,
+        # MAX_JUMPS=1,
         # USE_APRIORI_JUMPS=True,
         #CONVEX_NET=True,
     ) for datum in data]
