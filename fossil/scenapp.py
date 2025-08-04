@@ -196,19 +196,17 @@ class SingleScenApp:
             state: Current state dictionary containing bounds and support information
             include_discarded: Whether to include discarded samples count in the output
         """
-        print(f"Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+        print(f"A priori Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
         
         comp_size = self.calculate_compression_set_size(state)
         total_samples = self.config.N_DATA
-        
-        if include_discarded:
-            print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
-        else:
-            print(f"Compression set size: {comp_size}/{total_samples}") 
             
         if ScenAppStateKeys.compression_set_size in state and self.config.TRACK_COMPRESSION_SET:
-            print(f"Tracked compression set size: {state[ScenAppStateKeys.compression_set_size]}")
-            state["final_compression_set_size"] = state[ScenAppStateKeys.compression_set_size]
+            if include_discarded:
+                print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
+            else:
+                print(f"Compression set size: {state[ScenAppStateKeys.compression_set_size]}/{total_samples}")
+                state["final_compression_set_size"] = state[ScenAppStateKeys.compression_set_size]
 
 
     def a_post_verify(self, cert, cert_deriv, n_data):
