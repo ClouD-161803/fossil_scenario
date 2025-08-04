@@ -574,34 +574,6 @@ class SingleScenApp:
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result
 
-    def init_state(self, Sdot, S, S_traj, S_inds, times):
-        state = {
-                ScenAppStateKeys.net: self.learner,
-                ScenAppStateKeys.optimizer: self.optimizer,
-                ScenAppStateKeys.S: S,
-                ScenAppStateKeys.S_dot: Sdot,
-                ScenAppStateKeys.S_traj: S_traj["states"],
-                ScenAppStateKeys.S_traj_dot: S_traj["derivs"],
-                ScenAppStateKeys.S_inds: S_inds,
-                ScenAppStateKeys.times: times,
-                ScenAppStateKeys.V: None,
-                ScenAppStateKeys.V_dot: None,
-                ScenAppStateKeys.x_v_map: self.x_map,
-                ScenAppStateKeys.found: False,
-                ScenAppStateKeys.verification_timed_out: False,
-                ScenAppStateKeys.trajectory: None,
-                ScenAppStateKeys.ENet: self.config.ENET,
-                ScenAppStateKeys.best_loss: np.inf,
-                ScenAppStateKeys.best_net: None,
-                ScenAppStateKeys.discarded: set(),
-                ScenAppStateKeys.supps: set(),
-                ScenAppStateKeys.compression_set_size: 0,
-                ScenAppStateKeys.convex: self.config.CONVEX_NET,
-                ScenAppStateKeys.discrete: self.config.TIME_DOMAIN != TimeDomain.CONTINUOUS,
-                }
-
-        return state
-
     @property
     def result(self):
         return self._result
