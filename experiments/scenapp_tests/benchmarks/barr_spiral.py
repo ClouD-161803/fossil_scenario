@@ -92,6 +92,8 @@ def test_lnn(args):
         SCENAPP_MAX_ITERS=2500,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
+        # MAX_JUMPS=1,
+        # USE_APRIORI_JUMPS=True,
         #CONVEX_NET=True,
     ) for datum in data]
 

@@ -80,6 +80,8 @@ def test_lnn(args):
         SCENAPP_MAX_ITERS=2500,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
+        MAX_JUMPS=3,
+        USE_APRIORI_JUMPS=True,
     ) for datum in data]
     with Pool(processes=num_runs) as pool:
         res = pool.map(solve, opts)

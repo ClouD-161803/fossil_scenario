@@ -193,6 +193,8 @@ class ScenAppConfig:
     CONVEX_NET: bool = False
     CALC_DISC_GAP: bool = False
     TRACK_COMPRESSION_SET: bool = True
+    MAX_JUMPS: int = -1
+    USE_APRIORI_JUMPS: bool = False
     #CONSOLIDATOR: ConsolidatorType = ConsolidatorType.DEFAULT
     #TRANSLATOR: TranslatorType = TranslatorType.CONTINUOUS
     N_DATA: int = 500

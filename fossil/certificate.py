@@ -97,11 +97,18 @@ class Certificate:
             These may be stored as separate attributes for each domain, or
             as a dictionary of domain names and domains. They should be accessed accordingly.
         bias: Should the network have bias terms for this certificate? (default: True)
+        max_jumps: Maximum number of jumps/compression set size (default: -1, no limit)
+        use_apriori_jumps: Whether to use the a priori jump limit algorithm (default: False)
     """
 
     bias = True
+    max_jumps = -1
+    use_apriori_jumps = False
 
     def __init__(self, domains: dict[str, Any], config: Union[ScenAppConfig, None] = None) -> None:
+        if config is not None:
+            self.max_jumps = getattr(config, 'MAX_JUMPS', -1)
+            self.use_apriori_jumps = getattr(config, 'USE_APRIORI_JUMPS', False)
         pass
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data) -> tuple[int, int]:
@@ -152,6 +159,11 @@ class Certificate:
         updated_best_loss = best_loss
         updated_best_net = None
         
+
+        max_jumps_reached = hasattr(self, 'use_apriori_jumps') and self.use_apriori_jumps and \
+                            hasattr(self, 'max_jumps') and self.max_jumps > 0 and \
+                            len(supp_samples) >= self.max_jumps
+        
         sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
         max_loss = losses[sorted_keys[0]]
         
@@ -167,7 +179,7 @@ class Certificate:
             
             # Line 17: If (supp_loss - best_loss) >= η, add new sample to C
             if (supp_loss_float - best_loss) >= 1e-1:
-                if sorted_keys[0] in supp_samples:
+                if sorted_keys[0] in supp_samples or max_jumps_reached:
                     break_flag = True
                 else:
                     # Line 19: C ← C ∪ {ξ̄}
@@ -175,6 +187,9 @@ class Certificate:
                     new_supp_added = True
                     if isinstance(max_loss, torch.Tensor):
                         max_loss.backward()
+                    
+                    if hasattr(self, 'max_jumps') and self.max_jumps > 0 and len(supp_samples) >= self.max_jumps:
+                        break_flag = True
         
             elif discrete and supp_loss_float <= 0:
                 if max_loss <= 0:
@@ -185,8 +200,13 @@ class Certificate:
                     break_flag = True
                 else:
                     max_loss.backward()
-                    supp_samples.add(sorted_keys[0])
-                    new_supp_added = True
+                    if not max_jumps_reached:
+                        supp_samples.add(sorted_keys[0])
+                        new_supp_added = True
+                        if hasattr(self, 'max_jumps') and self.max_jumps > 0 and len(supp_samples) >= self.max_jumps:
+                            break_flag = True
+                    else:
+                        break_flag = True
             
             else:
                 # Line 13: Subgradients of loss for samples in M
@@ -202,10 +222,12 @@ class Certificate:
                         grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
                         inner = torch.inner(grads, supp_grads)
                         
-                        if inner <= 0:
+                        if inner <= 0 and not max_jumps_reached:
                             # Line 19: C ← C ∪ {ξ̄}
                             supp_samples.add(k)
                             new_supp_added = True
+                            if hasattr(self, 'max_jumps') and self.max_jumps > 0 and len(supp_samples) >= self.max_jumps:
+                                break_flag = True
                             break
                     
                     if not new_supp_added:
@@ -214,8 +236,14 @@ class Certificate:
         else:
             # Line 18: If no sample exceeds compression set, use max loss
             # Line 19: C ← C ∪ {ξ̄}
-            supp_samples.add(sorted_keys[0])
-            new_supp_added = True
+            if not max_jumps_reached:
+                supp_samples.add(sorted_keys[0])
+                new_supp_added = True
+                if hasattr(self, 'max_jumps') and self.max_jumps > 0 and len(supp_samples) >= self.max_jumps:
+                    break_flag = True
+            else:
+                break_flag = True
+                
             optimizer.zero_grad()
             max_loss.backward()
         
@@ -664,14 +692,24 @@ class Practical_Lyapunov(Certificate):
 
 class BarrierAlt(Certificate):
     """
-    Certifies Safety of a model  using Lie derivative everywhere.
+    Certifies Safety of a model using Lie derivative everywhere.
 
     Works for continuous and discrete models.
 
+    The algorithm can be constrained with a maximum number of jumps (compression set size)
+    by setting the MAX_JUMPS parameter in ScenAppConfig. This implements the a priori 
+    jump limit algorithm where:
+    1. Phase 1 is a sample-independent warm-start until state loss is minimized
+    2. Phase 2 is the main loop with misaligned gradient checks
+    3. The algorithm terminates when either convergence is reached or 
+       the maximum number of jumps (MAX_JUMPS) is reached
+
+    Use the USE_APRIORI_JUMPS flag to toggle between:
+    - True: Use the modified algorithm with max jumps limit (default)
+    - False: Use the vanilla algorithm without jump limits
+
     Arguments:
     domains {dict}: dictionary of string: domains pairs for a initial set, unsafe set and domain
-
-
     """
 
     def __init__(self, domains, config: ScenAppConfig) -> None:
@@ -682,6 +720,8 @@ class BarrierAlt(Certificate):
         self.bias = True
         self.D = config.DOMAINS
         self.T=config.SYSTEM.time_horizon
+        self.max_jumps = config.MAX_JUMPS
+        self.use_apriori_jumps = config.USE_APRIORI_JUMPS
 
     def compute_state_loss(
         # Line 4: l^s(θ) > 0 -- sample-independent state loss
@@ -850,6 +890,8 @@ class BarrierAlt(Certificate):
         # Line 3: C ← ∅ (Initialize compression set)
         supp_samples = compression_set if compression_set is not None else set()
         
+        jumps_count = len(supp_samples)
+        
         state_sol = False
         prev_supp_loss = -1000
         best_supp_defd = False
@@ -880,7 +922,7 @@ class BarrierAlt(Certificate):
                     log_loss_acc(t, max_loss, accuracy, learner.verbose)
                 
                 break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
-                    losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete
+                    losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete, None
                 )
                 
                 if updated_best_net is not None:
@@ -941,7 +983,10 @@ class BarrierAlt(Certificate):
         max_k = max(losses, key=lambda k: losses[k])
         max_loss = losses[max_k]
         best_loss = losses[max_k]
-        supp_samples = supp_samples.union(set([max_k]))
+        
+        if not self.use_apriori_jumps or self.max_jumps == -1 or jumps_count < self.max_jumps:
+            supp_samples = supp_samples.union(set([max_k]))
+            jumps_count += 1
         
         supp_samples.discard(-1)
         
@@ -950,7 +995,8 @@ class BarrierAlt(Certificate):
             "best_loss": best_loss,
             "best_net": best_net,
             "compression_set": supp_samples,
-            "compression_set_size": len(supp_samples)
+            "compression_set_size": len(supp_samples),
+            "jumps_count": jumps_count
         }
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
