@@ -32,10 +32,10 @@ def solve(opts):
 def test_lnn(args):
     XD = domains.Rectangle((0.1, 0.1), (0.5, 1))
     XI = domains.Rectangle((0.1, 0.1), (0.4, 0.55))
-    XU = domains.Rectangle((0.45, 0.6), (0.5, 1))
+    XU = domains.Rectangle((0.3, 0.8), (0.5, 1))
 
-    n_trajectory_data = 10
-    n_background_data = 50
+    n_trajectory_data = 100
+    n_background_data = 500
     num_runs = 1
 
     sets = {
@@ -71,7 +71,7 @@ def test_lnn(args):
         DATA=datum,
         N_DATA=n_trajectory_data,
         BETA=(0.01,),
-        CERTIFICATE=CertificateType.RWS,
+        CERTIFICATE=CertificateType.BARRIERALT,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         ACTIVATION=tuple(activations),
         N_HIDDEN_NEURONS=(hidden_neurons[0],),

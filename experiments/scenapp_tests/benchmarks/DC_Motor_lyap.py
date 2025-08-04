@@ -86,13 +86,13 @@ def test_lnn(args):
         DATA=datum,
         N_DATA=n_trajectory_data,
         N_TEST_DATA=n_background_data,
-        CERTIFICATE=CertificateType.LYAPUNOV,  # Use Practical_Lyapunov certificate
+        CERTIFICATE=CertificateType.PRACTICALLYAPUNOV,  # Use Practical_Lyapunov certificate
         TIME_DOMAIN=TimeDomain.DISCRETE,
         ACTIVATION=tuple(activations),
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
+        SCENAPP_MAX_ITERS=20,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
     ) for datum in data]

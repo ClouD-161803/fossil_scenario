@@ -33,28 +33,7 @@ np.random.seed(claudio_seed)
 torch.manual_seed(claudio_seed)
 
 
-def solve(system, sets, n_data, activations, hidden_neurons, data):
-
-    opts = ScenAppConfig(
-        N_VARS=2,
-        SYSTEM=system,
-        DOMAINS=sets,
-        DATA=data,
-        N_DATA=n_data,
-        N_TEST_DATA=n_data,
-        CERTIFICATE=CertificateType.BARRIERALT,
-        TIME_DOMAIN=TimeDomain.DISCRETE,
-        #VERIFIER=VerifierType.DREAL,
-        ACTIVATION=tuple(activations),
-        N_HIDDEN_NEURONS=(hidden_neurons[0],),
-        SYMMETRIC_BELT=True,
-        VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
-        VERIFIER=VerifierType.SCENAPPNONCONVEX,
-        SEED=claudio_seed,
-        #CONVEX_NET=True,
-    )
-
+def solve(opts):
     PAC = ScenApp(opts)
     result = PAC.solve()
     return result
@@ -65,18 +44,18 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
     XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
 
-    n_data = 100
+    n_trajectory_data = 100
+    n_background_data = 100
     
     sets = {
         certificate.XD: XD,
         certificate.XI: XI,
         certificate.XU: XU,
     }
-    n_state_data = 100
     state_data = {
-        certificate.XD: XD._generate_data(n_state_data)(),
-        certificate.XI: XI._generate_data(n_state_data)(),
-        certificate.XU: XU._generate_data(n_state_data)(),
+        certificate.XD: XD._generate_data(n_background_data)(),
+        certificate.XI: XI._generate_data(n_background_data)(),
+        certificate.XU: XU._generate_data(n_background_data)(),
     }
     activations = [ActivationType.SIGMOID, ActivationType.SIGMOID]
     #activations = [ActivationType.RELU]
@@ -87,22 +66,22 @@ def test_lnn(args):
     
     num_runs = 1
 
-    init_data = [XI._generate_data(n_data)() for j in range(num_runs)]
+    init_data = [XI._generate_data(n_trajectory_data)() for j in range(num_runs)]
     
     all_data = [system().generate_trajs(init_datum) for init_datum in init_data]
-    data = [{"states_only": state_data, "full_data": {"times":all_datum[0],"states":all_datum[1],"derivs":all_datum[2]}} for all_datum in all_data]
-    part_solve = partial(solve, system, sets, n_data, activations, hidden_neurons)
-    with Pool(processes=num_runs) as pool:
-        res = pool.map(part_solve, data)
-    #res = [part_solve(data[0])]
-
-    opts = ScenAppConfig(
+    data = [{"states_only": state_data, 
+             "full_data": {"times":all_datum[0],
+                          "states":all_datum[1],
+                          "derivs":all_datum[2]}} 
+            for all_datum in all_data]
+    
+    opts = [ScenAppConfig(
         N_VARS=2,
         SYSTEM=system,
         DOMAINS=sets,
-        DATA=data[-1],
-        N_DATA=n_data,
-        N_TEST_DATA=n_data,
+        DATA=datum,
+        N_DATA=n_trajectory_data,
+        N_TEST_DATA=n_trajectory_data,
         CERTIFICATE=CertificateType.BARRIERALT,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         #VERIFIER=VerifierType.DREAL,
@@ -114,40 +93,22 @@ def test_lnn(args):
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
         #CONVEX_NET=True,
-    )
-    axes = plotting.benchmark(
-        system(), res[-1].cert, domains=opts.DOMAINS, xrange=[-5, 5], yrange=[-5, 5]
-    )
-    for ax, name in axes:
-        plotting.save_plot_with_tags(ax, opts, name)
-    #opts = ScenAppConfig(
-    #    N_VARS=2,
-    #    SYSTEM=system,
-    #    DOMAINS=sets,
-    #    DATA=data,
-    #    N_DATA=n_data,
-    #    CERTIFICATE=CertificateType.BARRIERALT,
-    #    TIME_DOMAIN=TimeDomain.DISCRETE,
-    #    #VERIFIER=VerifierType.DREAL,
-    #    ACTIVATION=activations,
-    #    N_HIDDEN_NEURONS=hidden_neurons,
-    #    SYMMETRIC_BELT=True,
-    #    VERBOSE=0,
-    #    SCENAPP_MAX_ITERS=200,
-    #    VERIFIER=VerifierType.SCENAPPNONCONVEX,
-    #    #CONVEX_NET=True,
-    #)
-    
+    ) for datum in data]
 
-    #PAC = ScenApp(opts)
-    #result = PAC.solve()
-    #main.run_benchmark(
-    #    opts,
-    #    record=args.record,
-    #    plot=args.plot,
-    #    concurrent=args.concurrent,
-    #    repeat=args.repeat,
-    #)
+    with Pool(processes=num_runs) as pool:
+        res = pool.map(solve, opts)
+
+    if args.plot:
+        axes = plotting.benchmark(
+            system(), res[-1].cert, domains=opts[-1].DOMAINS, xrange=[-5, 5], yrange=[-5, 5]
+        )
+        for ax, name in axes:
+            plotting.save_plot_with_tags(ax, opts[-1], name)
+    
+    if args.record:
+        for i, result in enumerate(res):
+            rec = analysis.Recorder()
+            rec.record(opts[i], result, 0)
 
 
 if __name__ == "__main__":
