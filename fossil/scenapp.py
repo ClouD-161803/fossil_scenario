@@ -573,7 +573,8 @@ class SingleScenApp:
         #    ctrl = " and controller"
         #else:
         ctrl = ""
-        print(f"Found a valid {self.config.CERTIFICATE.name} certificate" + ctrl)
+        loss_str = f" (final loss: {state['best_loss']:.6f})" if 'best_loss' in state else ""
+        print(f"Found a valid {self.config.CERTIFICATE.name} certificate{loss_str}" + ctrl)
         stop = True
         return stop
 
