@@ -690,7 +690,7 @@ class DoubleScenApp(SingleScenApp):
         if "final_compression_set_size" in state:
             print(f"Final compression set size: {state['final_compression_set_size']}")
             
-        return a_post_eps
+        return a_post_eps, stats
 
     def solve(self) -> Result:
         converge_tol = 1e-4
@@ -803,7 +803,7 @@ class DoubleScenApp(SingleScenApp):
 
         # Use consolidated post-processing printing method if BARRIERALT certificate
         if self.config.CERTIFICATE == CertificateType.BARRIERALT:
-            a_post_eps = self.print_post_processing_results(state, iters, N_data, n_test_data)
+            a_post_eps, stats = self.print_post_processing_results(state, iters, N_data, n_test_data)
         else:
             # Original post-processing code for other certificate types
             stats = Stats(

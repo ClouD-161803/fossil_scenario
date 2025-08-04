@@ -46,8 +46,8 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
     XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
 
-    n_trajectory_data = 10
-    n_background_data = 10000
+    n_trajectory_data = 100
+    n_background_data = 100
     
     sets = {
         certificate.XD: XD,

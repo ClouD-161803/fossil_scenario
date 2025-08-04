@@ -34,8 +34,8 @@ def test_lnn(args):
     XI = domains.Rectangle((0.1, 0.1), (0.4, 0.55))
     XU = domains.Rectangle((0.3, 0.8), (0.5, 1))
 
-    n_trajectory_data = 1000
-    n_background_data = 5000
+    n_trajectory_data = 100
+    n_background_data = 500
     num_runs = 1
 
     sets = {
@@ -70,14 +70,14 @@ def test_lnn(args):
         DOMAINS=sets,
         DATA=datum,
         N_DATA=n_trajectory_data,
-        BETA=(1e-21,),
+        BETA=(1e-2,),
         CERTIFICATE=CertificateType.BARRIERALT,
         TIME_DOMAIN=TimeDomain.DISCRETE,
         ACTIVATION=tuple(activations),
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=250,
+        SCENAPP_MAX_ITERS=50,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
         # MAX_JUMPS=3,

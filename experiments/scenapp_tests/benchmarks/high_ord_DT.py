@@ -47,9 +47,9 @@ def test_lnn(args):
         certificate.XU: XU,
         # certificate.XG: XG,
     }
-    n_data = 5000
+    n_data = 100
     num_runs = 1
-    n_state_data = 5000 
+    n_state_data = 100
     sets = {
         certificate.XD: XD,
         certificate.XI: XI,
@@ -84,8 +84,8 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         SEED=claudio_seed,
-        MAX_JUMPS=1,
-        USE_APRIORI_JUMPS=True,
+        # MAX_JUMPS=1,
+        # USE_APRIORI_JUMPS=True,
     ) for datum in data]
 
     
