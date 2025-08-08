@@ -203,12 +203,9 @@ class SingleScenApp:
         if J is None or J < 0:
             return None
         N = int(self.config.N_DATA)
-        # Default d as 1 unless provided
         d = int(getattr(self.config, 'D_APRIORI', 1))
         K = int(J + 2 - d)
-        # Clamp K to valid range
         K = max(0, min(K, N))
-        # Retrieve beta (confidence) robustly as float
         beta_cfg = getattr(self.config, 'BETA', 0.01)
         try:
             beta_val = float(np.array(beta_cfg).reshape(-1)[0])
@@ -216,12 +213,11 @@ class SingleScenApp:
             beta_val = float(beta_cfg if not isinstance(beta_cfg, (list, tuple)) else beta_cfg[0])
         if K >= N:
             return 1.0
-        # Invert regularized incomplete beta: P(X<=K) = I_{1-eps}(N-K, K+1) = beta
+        # P(X<=K) = I_{1-eps}(N-K, K+1) = beta
         try:
             x = betaincinv(N - K, K + 1, beta_val)
             eps = 1.0 - float(x)
         except Exception:
-            # Fallback: simple bisection on [0,1]
             lo, hi = 0.0, 1.0
             from scipy.special import betainc as _betainc
             for _ in range(60):
