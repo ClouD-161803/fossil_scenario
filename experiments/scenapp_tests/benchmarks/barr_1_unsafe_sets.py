@@ -106,7 +106,7 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([0.25, -1]), tuple([1, 1]))
     XU = UnsafeDomain()
 
-    n_trajectory_data = 400
+    n_trajectory_data = 100
     n_background_data = 1000
     num_runs = 1
     
@@ -173,9 +173,10 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=20,
+        SCENAPP_MAX_ITERS=2000,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
+        BETA=(0.1,),
         # MAX_JUMPS=1,
         # USE_APRIORI_JUMPS=False
     ) for datum in data]

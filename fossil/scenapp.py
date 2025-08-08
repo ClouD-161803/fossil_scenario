@@ -1,4 +1,4 @@
-from typing import NamedTuple, Union, Tuple
+from typing import NamedTuple, Union, Tuple, Any
 
 import fossil.learner as learner
 import fossil.verifier as verifier
@@ -14,8 +14,10 @@ import torch
 import copy
 import sympy as sp
 from scipy import stats
+import numpy as np
 
 from scipy.stats import beta as betaF
+from scipy.special import betaincinv
 
 scenapp_log = logger.Logger.setup_logger(__name__)
 
@@ -187,6 +189,50 @@ class SingleScenApp:
         else:
             comp_size = len(state["supps"].union(state["discarded"]))
         return comp_size
+    
+    def compute_modified_apriori_epsilon(self) -> Union[float, None]:
+        """
+        Compute the modified a priori epsilon from:
+            sum_{k=0}^{J+2-d} C(N,k) eps^k (1-eps)^{N-k} = beta
+        Only computed when USE_APRIORI_JUMPS is True.
+        """
+        use_apriori = getattr(self.config, 'USE_APRIORI_JUMPS', False)
+        if not use_apriori:
+            return None
+        J = getattr(self.config, 'MAX_JUMPS', None)
+        if J is None or J < 0:
+            return None
+        N = int(self.config.N_DATA)
+        # Default d as 1 unless provided
+        d = int(getattr(self.config, 'D_APRIORI', 1))
+        K = int(J + 2 - d)
+        # Clamp K to valid range
+        K = max(0, min(K, N))
+        # Retrieve beta (confidence) robustly as float
+        beta_cfg = getattr(self.config, 'BETA', 0.01)
+        try:
+            beta_val = float(np.array(beta_cfg).reshape(-1)[0])
+        except Exception:
+            beta_val = float(beta_cfg if not isinstance(beta_cfg, (list, tuple)) else beta_cfg[0])
+        if K >= N:
+            return 1.0
+        # Invert regularized incomplete beta: P(X<=K) = I_{1-eps}(N-K, K+1) = beta
+        try:
+            x = betaincinv(N - K, K + 1, beta_val)
+            eps = 1.0 - float(x)
+        except Exception:
+            # Fallback: simple bisection on [0,1]
+            lo, hi = 0.0, 1.0
+            from scipy.special import betainc as _betainc
+            for _ in range(60):
+                mid = (lo + hi) / 2.0
+                val = _betainc(N - K, K + 1, 1.0 - mid)
+                if val > beta_val:
+                    hi = mid
+                else:
+                    lo = mid
+            eps = (lo + hi) / 2.0
+        return max(0.0, min(1.0, eps))
     
     def discard(self, state):
         """
@@ -378,6 +424,11 @@ class SingleScenApp:
             else:
                 print(f"Compression set size: {state[ScenAppStateKeys.compression_set_size]}/{total_samples}")
                 state["final_compression_set_size"] = state[ScenAppStateKeys.compression_set_size]
+        
+        if getattr(self.config, 'USE_APRIORI_JUMPS', False):
+            eps_mod = self.compute_modified_apriori_epsilon()
+            if eps_mod is not None:
+                print(f"Modified a priori Epsilon: {eps_mod:.5f}")
 
     def process_timers(self, state: dict[str, Any]) -> dict[str, Any]:
         state[ScenAppStateKeys.components_times] = [

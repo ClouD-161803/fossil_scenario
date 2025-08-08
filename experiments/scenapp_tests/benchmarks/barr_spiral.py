@@ -48,6 +48,9 @@ def test_lnn(args):
 
     n_trajectory_data = 100
     n_background_data = 100
+    max_iters = 20
+    use_apriori_jumps = True
+    max_jumps = 4
     
     sets = {
         certificate.XD: XD,
@@ -92,11 +95,11 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=20,
+        SCENAPP_MAX_ITERS=max_iters,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
-        # MAX_JUMPS=1,
-        # USE_APRIORI_JUMPS=True,
+        MAX_JUMPS=max_jumps,
+        USE_APRIORI_JUMPS=use_apriori_jumps,
         #CONVEX_NET=True,
     ) for datum in data]
 
