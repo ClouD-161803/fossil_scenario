@@ -14,7 +14,13 @@ from fossil import certificate
 from fossil import main
 from fossil import analysis
 from experiments.benchmarks import models
-from fossil.consts import *
+from fossil.consts import (
+    ActivationType,
+    ScenAppConfig,
+    CertificateType,
+    TimeDomain,
+    VerifierType,
+)
 from multiprocessing import Pool
 import random
 import numpy as np
@@ -185,10 +191,13 @@ def test_lnn(args):
         res = pool.map(solve, opts)
     
     if args.plot:
+        # Force specific contour levels to avoid "Contour levels must be increasing" error
+        custom_levels = [-0.1, 0, 0.1]  # Ensure increasing levels
         axes = plotting.benchmark(
             system(), res[-1].cert,
             domains=opts[-1].DOMAINS,
-            xrange=[-2, 2], yrange=[-2, 2]
+            xrange=[-2, 2], yrange=[-2, 2],
+            levels=[custom_levels]  # Pass custom levels
         )
         for ax, name in axes:
             plotting.save_plot_with_tags(ax, opts[-1], name)
