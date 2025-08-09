@@ -552,6 +552,8 @@ class Practical_Lyapunov(Certificate):
         supp_samples = compression_set if compression_set is not None else set()
         jumps_count = len(supp_samples)
         state_sol = False
+        prev_loss = float('inf')
+        patience_counter = 0
         for t in range(learn_loops):
             optimizer.zero_grad()
             if self.control:
@@ -566,10 +568,21 @@ class Practical_Lyapunov(Certificate):
                 V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
                 V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
                 V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-                beta = V_SG.min()
+                beta = V_SG.min().detach()
                 losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind if Sind else {}, supp_samples)
                 sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
                 max_loss = losses[sorted_keys[0]]
+
+                current_loss = max_loss.item() if hasattr(max_loss, 'item') else max_loss
+                if abs(current_loss - prev_loss) < 1e-6:
+                    patience_counter += 1
+                else:
+                    patience_counter = 0
+                prev_loss = current_loss
+                
+                if patience_counter > 50 or current_loss < 1e-4:  # Early stopping
+                    break
+                
                 if t % 100 == 0 or t == learn_loops - 1:
                     log_loss_acc(t, max_loss, learn_accuracy, learner.verbose)
                 break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
@@ -592,18 +605,18 @@ class Practical_Lyapunov(Certificate):
                     V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
                     V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
                     V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-                    beta = V_SG.min()
+                    beta = V_SG.min().detach()
                     state_itt += 1
                     loss = self.compute_state_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind if Sind else {}, supp_samples)
-                    if loss == 0:
+                    loss_val = loss.item() if hasattr(loss, 'item') else loss
+                    if loss_val < 1e-4 or state_itt > 2000:  # Add tolerance and max iterations
                         state_sol = True
                         break
                     if isinstance(loss, torch.Tensor):
                         loss.backward()
                     optimizer.step()
                     if state_itt % 500 == 0:
-                        loss_v = loss.item() if hasattr(loss, 'item') else loss
-                        cert_log.debug(f"state warm start it {state_itt} loss {loss_v:.6f}")
+                        cert_log.debug(f"state warm start it {state_itt} loss {loss_val:.6f}")
                 # proceed to main loop next outer iteration
         if best_net is None:
             best_net = copy.deepcopy(learner)
@@ -614,7 +627,7 @@ class Practical_Lyapunov(Certificate):
         V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
         V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
         V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-        beta = V_SG.min()
+        beta = V_SG.min().detach()
         losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_G, V_D, V_SD, V1, beta, Vdot, Sind if Sind else {}, supp_samples)
         max_k = max(losses, key=lambda k: losses[k])
         max_loss = losses[max_k]
@@ -913,15 +926,15 @@ class BarrierAlt(Certificate):
                     B_u = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
                     state_itt += 1
                     loss = self.compute_state_loss(B_i, B_u, B_d, Vdot, Sind if Sind else {}, supp_samples)
-                    if loss == 0:
+                    loss_val = loss.item() if hasattr(loss, 'item') else loss
+                    if loss_val < 1e-4 or state_itt > 2000:  # Add tolerance and max iterations
                         state_sol = True
                         break
                     if isinstance(loss, torch.Tensor):
                         loss.backward()
                     optimizer.step()
                     if state_itt % 500 == 0:
-                        loss_v = loss.item() if hasattr(loss, 'item') else loss
-                        cert_log.debug(f"state warm start it {state_itt} loss {loss_v:.6f}")
+                        cert_log.debug(f"state warm start it {state_itt} loss {loss_val:.6f}")
                 # proceed to main loop next outer iteration
         if best_net is None:
             best_net = copy.deepcopy(learner)
@@ -1178,6 +1191,8 @@ class RWS(Certificate):
         supp_samples = compression_set if compression_set is not None else set()
         jumps_count = len(supp_samples)
         state_sol = False
+        prev_loss = float('inf')
+        patience_counter = 0
         for t in range(learn_loops):
             optimizer.zero_grad()
             if self.control:
@@ -1192,10 +1207,21 @@ class RWS(Certificate):
                 V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
                 V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
                 V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-                beta = V_SG.min()
+                beta = V_SG.min().detach()
                 losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_SD, V_D, V_D, V_G, Vdot, beta, Sind if Sind else {}, supp_samples)
                 sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
                 max_loss = losses[sorted_keys[0]]
+
+                current_loss = max_loss.item() if hasattr(max_loss, 'item') else max_loss
+                if abs(current_loss - prev_loss) < 1e-6:
+                    patience_counter += 1
+                else:
+                    patience_counter = 0
+                prev_loss = current_loss
+                
+                if patience_counter > 50 or current_loss < 1e-4:  # Early stopping
+                    break
+                
                 if t % 100 == 0 or t == learn_loops - 1:
                     log_loss_acc(t, max_loss, learn_accuracy, learner.verbose)
                 break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
@@ -1218,18 +1244,18 @@ class RWS(Certificate):
                     V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
                     V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
                     V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-                    beta = V_SG.min()
+                    beta = V_SG.min().detach()
                     state_itt += 1
                     state_loss, _ = self.compute_state_loss(V_I, V_SD, V_D, V_D, V_G, Vdot, beta, Sind if Sind else {}, supp_samples)
-                    if state_loss == 0:
+                    loss_val = state_loss.item() if hasattr(state_loss, 'item') else state_loss
+                    if loss_val < 1e-4 or state_itt > 2000:  # Add tolerance and max iterations
                         state_sol = True
                         break
                     if isinstance(state_loss, torch.Tensor):
                         state_loss.backward()
                     optimizer.step()
                     if state_itt % 500 == 0:
-                        loss_v = state_loss.item() if hasattr(state_loss, 'item') else state_loss
-                        cert_log.debug(f"RWS warm start it {state_itt} loss {loss_v:.6f}")
+                        cert_log.debug(f"RWS warm start it {state_itt} loss {loss_val:.6f}")
         if best_net is None:
             best_net = copy.deepcopy(learner)
         B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, time_tensor[:idot1] if time_tensor is not None else None)
