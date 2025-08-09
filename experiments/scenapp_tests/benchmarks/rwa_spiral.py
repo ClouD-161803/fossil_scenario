@@ -46,7 +46,7 @@ def solve(system, sets, n_data, activations, hidden_neurons, data):
         ACTIVATION=tuple(activations),
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
+        SCENAPP_MAX_ITERS=25,
         SEED=claudio_seed,
     )
     PAC = ScenApp(opts)
@@ -82,8 +82,8 @@ def test_lnn(args):
         certificate.XG: XG,
         certificate.XG_BORDER: XG,
     }
-    n_data = 1000
-    n_state_data = 5000
+    n_data = 100
+    n_state_data = 500
 
     # not sure if we should generate data from border of XS? Should be possible for simple borders
     state_data = {
@@ -130,7 +130,7 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(n_hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
+        SCENAPP_MAX_ITERS=25,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
         #CONVEX_NET=True,

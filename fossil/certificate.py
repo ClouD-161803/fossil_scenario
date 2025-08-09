@@ -128,7 +128,7 @@ class Certificate:
         supp_loss: Union[torch.Tensor, int],
         supp_samples: set,
         best_loss: float,
-        learner,
+        model,
         optimizer,
         discrete: bool = False,
         beta: Union[torch.Tensor, float, None] = None
@@ -167,7 +167,7 @@ class Certificate:
         if max_jumps_reached:
             break_flag = True
             if updated_best_net is None:
-                updated_best_net = copy.deepcopy(learner)
+                updated_best_net = copy.deepcopy(model)
                 if beta is not None:
                     updated_best_net = safe_set_beta(updated_best_net, beta)
             return break_flag, new_supp_added, supp_samples, updated_best_loss, updated_best_net
@@ -179,7 +179,7 @@ class Certificate:
             supp_loss_float = supp_loss.item() if isinstance(supp_loss, torch.Tensor) else float(supp_loss)
             if supp_loss_float < best_loss:
                 updated_best_loss = supp_loss_float
-                updated_best_net = copy.deepcopy(learner)
+                updated_best_net = copy.deepcopy(model)
                 if beta is not None:
                     updated_best_net = safe_set_beta(updated_best_net, beta)
             
@@ -202,7 +202,7 @@ class Certificate:
             elif discrete and supp_loss_float <= 0:
                 if max_loss <= 0:
                     updated_best_loss = supp_loss_float
-                    updated_best_net = copy.deepcopy(learner)
+                    updated_best_net = copy.deepcopy(model)
                     if beta is not None:
                         updated_best_net = safe_set_beta(updated_best_net, beta)
                     break_flag = True
@@ -221,13 +221,13 @@ class Certificate:
                 new_supp = False
                 if isinstance(supp_loss, torch.Tensor):
                     supp_loss.backward(retain_graph=True)
-                    supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                    supp_grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in model.parameters()])
                     
                     # Line 15: If there is a misaligned subgradient (inner ≤ 0)
                     for k in sorted_keys:
                         optimizer.zero_grad()
                         losses[k].backward(retain_graph=True)
-                        grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in learner.parameters()])
+                        grads = torch.hstack([torch.flatten(param.grad) if param.grad is not None else torch.tensor([]) for param in model.parameters()])
                         inner = torch.inner(grads, supp_grads)
                         
                         if inner <= 0 and not max_jumps_reached:
@@ -371,7 +371,7 @@ class Practical_Lyapunov(Certificate):
             Vdot: torch.Tensor, 
             indices: dict,
             supp_samples: set,
-    ) -> tuple[torch.Tensor, dict]:
+    ) -> torch.Tensor:
         """_summary_
 
         Args:
@@ -678,12 +678,15 @@ class BarrierAlt(Certificate):
     domains {dict}: dictionary of string: domains pairs for a initial set, unsafe set and domain
     """
 
+    # BARRIER_ALT_CLASS_MARKER - unique identifier for this class
+
     def __init__(self, domains, config: ScenAppConfig) -> None:
         # Line 1: Function A(θ, D) -- θ is the parameter vector, D is the dataset
         self.domain = domains[XD]
         self.initial_s = domains[XI]
         self.unsafe_s = domains[XU]
         self.bias = True
+        self.control = config.CTRLAYER is not None
         self.D = config.DOMAINS
         self.T=config.SYSTEM.time_horizon
         self.max_jumps = config.MAX_JUMPS
@@ -826,117 +829,109 @@ class BarrierAlt(Certificate):
         compression_set: Union[set, None] = None,
     ) -> dict:
         """
-        :param learner: learner object
-        :param optimizer: torch optimiser
-        :param S: dict of tensors of data
-        :param Sdot: dict of tensors containing f(data)
-        :param compression_set: Optional set to track compression set across calls
-        :return: --
+        Learns a certificate.
+
+        Args:
+            learner: fossil learner object (inherits from torch.nn.Module )
+            optimizer: torch optimiser object
+            S: dict of tensors of data (keys are domain names the data corresponds to, e.g. XD, XI)
+            Sdot: dict of tensors containing f(data) (keys are domain names the data corresponds to, e.g. XD, XI)
+            Sind: dict of indices for computing losses 
+            times: list of timestamps for each trajectory
+            best_loss: current best loss value
+            best_net: current best network
+            f_torch: torch function that computes f(data) (optional, for control synthesis)
+            discrete: whether the system is discrete-time
+
+        Returns:
+            dict: empty dictionary
+
+
+
+        This function is called by the learner object. It uses the sample Pytorch data points S and Sdot to
+        calculate a loss function that should be minimised so the certificate properties are satisfied. The
+        learn function does not return anything, but updates the optimiser object through the optimiser.step()
+        function (which in turn updates the learners weights.)
+
+        For control synthesis, the f_torch function is passed to the certificate, which is used to recompute the
+        dynamics Sdot from the data S at each loop, since the control synthesis changes with each iteration.
         """
         torch.set_num_threads(8)
-        
-        assert len(S) == len(Sdot)
-
         learn_loops = 1000
-        condition_old = False
         i1 = S[XD].shape[0]; idot1 = Sdot[XD].shape[0]
         i2 = S[XI].shape[0]; idot2 = Sdot[XI].shape[0]
-        i3 = S[XG].shape[0]; idot3 = 0
-        idot4 = Sdot[XS_BORDER].shape[0] if type(Sdot[XS_BORDER]) is not list else 0
-        i4 = S[XS_BORDER].shape[0]
-        idot5 = len(Sdot[XG_BORDER])
-
-        label_order = [XD, XI, XG, XS_BORDER, XG_BORDER]
-        samples = torch.cat([S[label] for label in label_order if type(S[label]) is not list])
-
+        i3 = S[XU].shape[0]; idot3 = len(Sdot[XU]) if XU in Sdot else 0
+        
+        samples = torch.cat([S[XD], S[XI], S[XU]])
         samples_dot = Sdot[XD]
-        samples_with_nexts = S[XD][:idot1]
+        samples_with_nexts = samples[:idot1]
         states_only = torch.cat([
             samples[idot1:i1],
             samples[i1+idot2:i1+i2],
-            samples[i1+i2+idot3:i1+i2+i3],
-            samples[i1+i2+i3+idot4:i1+i2+i3+i4],
-            samples[i1+i2+i3+i4+idot5:]
+            samples[i1+i2:i1+i2+i3]
         ])
-        if times is not None and not isinstance(times, dict):
-            raise TypeError("times must be a dict[str, torch.Tensor] or None")
-        times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
-        
+        assert times is not None, "times must be provided"
+        time_tensor = times[XD]
         supp_samples = compression_set if compression_set is not None else set()
-        
         jumps_count = len(supp_samples)
-        
         state_sol = False
         for t in range(learn_loops):
             optimizer.zero_grad()
-            B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-            B = learner(states_only)
-            
-            B_d_states = B[:i1-idot1]
-            B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-            B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-            B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-            B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-            beta = B_sg.min()
-            
+            if self.control:
+                if f_torch is None:
+                    raise ValueError("f_torch must be provided when control synthesis is enabled")
+                samples_dot = f_torch(samples)
             if state_sol:
-                losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
+                V1, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, time_tensor)
+                V2 = learner(states_only)
+                B_d = V2[:i1-idot1]
+                B_i = V2[i1-idot1:i1+i2-idot1-idot2] 
+                B_u = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
+                beta = torch.tensor(0.)  # For barrier certificates
+                losses, supp_loss, learn_accuracy = self.compute_loss(B_i, B_u, B_d, Vdot, Sind if Sind else {}, supp_samples)
                 sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
                 max_loss = losses[sorted_keys[0]]
-                if (t % int(learn_loops / 10) == 0 or learn_loops - t < 10) or t == 1:
-                    log_loss_acc(t, max_loss, accuracy, learner.verbose)
-                
+                if t % 100 == 0 or t == learn_loops - 1:
+                    log_loss_acc(t, max_loss, learn_accuracy, learner.verbose)
                 break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
                     losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete, beta
                 )
-                
                 if updated_best_net is not None:
                     best_net = updated_best_net
-                
                 if break_flag:
                     break
-
                 optimizer.step()
             else:
-                # Lines 4-9: While l^s(θ) > 0, minimize state loss
+                # Warm start (sample independent) phase
                 state_itt = 0
                 while True:
                     optimizer.zero_grad()
-                    B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-                    
-                    B2 = learner(states_only)
-                    (
-                        B_d_states,
-                        Bdot_d,
-                    ) = (
-                            B2[:i1-idot1] ,
-                        Bdot[:idot1],
-                    )
-                    B_i = B2[i1-idot1 : i1 + i2-idot1-idot2]
-                    B_u = B2[i1+i2-idot1-idot2 :]
+                    V1, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, time_tensor)
+                    V2 = learner(states_only)
+                    B_d = V2[:i1-idot1]
+                    B_i = V2[i1-idot1:i1+i2-idot1-idot2]
+                    B_u = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
                     state_itt += 1
-                    loss = self.compute_state_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
+                    loss = self.compute_state_loss(B_i, B_u, B_d, Vdot, Sind if Sind else {}, supp_samples)
                     if loss == 0:
                         state_sol = True
                         break
-                    else:
-                        if isinstance(loss, torch.Tensor):
-                            loss.backward()
-                        optimizer.step()
-                        if state_itt % 100 == 0:
-                            loss_v = loss.item() if hasattr(loss, 'item') else loss
-                            cert_log.debug(f"RWS warm start it {state_itt} loss {loss_v:.6f}")
+                    if isinstance(loss, torch.Tensor):
+                        loss.backward()
+                    optimizer.step()
+                    if state_itt % 500 == 0:
+                        loss_v = loss.item() if hasattr(loss, 'item') else loss
+                        cert_log.debug(f"state warm start it {state_itt} loss {loss_v:.6f}")
+                # proceed to main loop next outer iteration
         if best_net is None:
             best_net = copy.deepcopy(learner)
-        B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-        B = best_net(states_only)
-        B_d_states = B[:i1-idot1]
-        B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-        B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-        B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-        B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-        beta = B_sg.min()
-        losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
+        V1, Vdot, _ = best_net.get_all(samples_with_nexts, samples_dot, time_tensor)
+        V2 = best_net(states_only)
+        B_d = V2[:i1-idot1]
+        B_i = V2[i1-idot1:i1+i2-idot1-idot2]
+        B_u = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
+        beta = torch.tensor(0.)  # placeholder for barrier certificates
+        losses, supp_loss, learn_accuracy = self.compute_loss(B_i, B_u, B_d, Vdot, Sind if Sind else {}, supp_samples)
         max_k = max(losses, key=lambda k: losses[k])
         max_loss = losses[max_k]
         best_loss = losses[max_k]
@@ -955,28 +950,27 @@ class BarrierAlt(Certificate):
         }
 
     def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
-        req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal"]).min()) / self.T
-        true_violated = 0
+        req_diff = (certificate(state_data["unsafe"]).min() - certificate(state_data["init"]).max()) / self.T
         violated = 0
-        for traj, traj_deriv, time in zip(S, Sdot, times):
-            traj = torch.tensor(traj.T, dtype=torch.float32)
-            traj_deriv = torch.tensor(np.array(traj_deriv).T, dtype=torch.float32)
-            time = torch.tensor(time, dtype=torch.float32)
-            initial_inds = torch.where(self.D[XI].check_containment(traj))
-            goal_inds = torch.where(self.D[XG].check_containment(traj))
-            V_d = certificate(traj)
-            pred_dots = certificate_dot(traj, traj_deriv, time)
-            goal_inds_0 = torch.where(self.D[XG].check_containment(traj))[0]
-            if not all(self.D[XS].check_containment(traj)) or not any(self.D[XG].check_containment(traj)):
+        true_violated = 0
+        for i, (traj, traj_deriv, time) in enumerate(zip(S, Sdot, times)):
+            traj, traj_deriv, time = torch.tensor(traj.T, dtype=torch.float32), torch.tensor(np.array(traj_deriv).T, dtype=torch.float32), torch.tensor(time, dtype=torch.float32)
+            if self.D is None or self.D.get(XD) is None or self.D.get(XU) is None:
+                continue
+            valid_inds = torch.where(self.D[XD].check_containment(traj))
+            traj = traj[valid_inds]
+            traj_deriv = traj_deriv[valid_inds]
+            time = time[valid_inds]
+            pred_V = certificate(traj)
+            pred_0 = certificate(torch.zeros_like(traj))
+            pred_Vdot = certificate_dot(traj, traj_deriv, time)
+            non_unsafe_inds = torch.where(domains.Complement(self.D[XU]).check_containment(traj))
+            if len(non_unsafe_inds) == 0:
                 true_violated += 1
-            lie_inds = torch.nonzero(V_d <= 0)
-            if any(self.D[XG].check_containment(traj)):
-                lie_inds = [ind.item() for ind in lie_inds if ind not in goal_inds_0]
-            if any(pred_dots[lie_inds] > req_diff):
+            # We should check for value violations, but currently don't
+            if any(pred_Vdot[non_unsafe_inds] > -req_diff):
                 violated += 1
         return violated, true_violated
-
-
 
 class RWS(Certificate):
     """Certificate to satisfy a reach-while-stay property.
@@ -1010,6 +1004,7 @@ class RWS(Certificate):
         self.safe_border = domains[XS_BORDER]
         self.goal = domains[XG]
         self.bias = True
+        self.control = config.CTRLAYER is not None
         self.BORDERS = (XS,)
         self.D = config.DOMAINS
         self.T = config.SYSTEM.time_horizon
@@ -1134,31 +1129,43 @@ class RWS(Certificate):
         compression_set: Union[set, None] = None,
     ) -> dict:
         """
-        :param learner: learner object
-        :param optimizer: torch optimiser
-        :param S: dict of tensors of data
-        :param Sdot: dict of tensors containing f(data)
-        :param compression_set: Optional set to track compression set across calls
-        :return: --
+        Learns a certificate.
+
+        Args:
+            learner: fossil learner object (inherits from torch.nn.Module )
+            optimizer: torch optimiser object
+            S: dict of tensors of data (keys are domain names the data corresponds to, e.g. XD, XI)
+            Sdot: dict of tensors containing f(data) (keys are domain names the data corresponds to, e.g. XD, XI)
+            Sind: dict of indices for computing losses 
+            times: list of timestamps for each trajectory
+            best_loss: current best loss value
+            best_net: current best network
+            f_torch: torch function that computes f(data) (optional, for control synthesis)
+            discrete: whether the system is discrete-time
+
+        Returns:
+            dict: empty dictionary
+
+
+
+        This function is called by the learner object. It uses the sample Pytorch data points S and Sdot to
+        calculate a loss function that should be minimised so the certificate properties are satisfied. The
+        learn function does not return anything, but updates the optimiser object through the optimiser.step()
+        function (which in turn updates the learners weights.)
+
+        For control synthesis, the f_torch function is passed to the certificate, which is used to recompute the
+        dynamics Sdot from the data S at each loop, since the control synthesis changes with each iteration.
         """
         torch.set_num_threads(8)
-        
-        assert len(S) == len(Sdot)
-
         learn_loops = 1000
-        condition_old = False
         i1 = S[XD].shape[0]; idot1 = Sdot[XD].shape[0]
         i2 = S[XI].shape[0]; idot2 = Sdot[XI].shape[0]
-        i3 = S[XG].shape[0]; idot3 = 0
-        idot4 = Sdot[XS_BORDER].shape[0] if type(Sdot[XS_BORDER]) is not list else 0
-        i4 = S[XS_BORDER].shape[0]
-        idot5 = len(Sdot[XG_BORDER])
-
-        label_order = [XD, XI, XG, XS_BORDER, XG_BORDER]
-        samples = torch.cat([S[label] for label in label_order if type(S[label]) is not list])
-
+        i3 = S[XG_BORDER].shape[0]; idot3 = len(Sdot[XG_BORDER])
+        i4 = S[XG].shape[0]; idot4 = len(Sdot[XG])
+        idot5 = len(Sdot[XS_BORDER])
+        samples = torch.cat([S[XD], S[XI], S[XG_BORDER],  S[XG], S[XS_BORDER]])
         samples_dot = Sdot[XD]
-        samples_with_nexts = S[XD][:idot1]
+        samples_with_nexts = samples[:idot1]
         states_only = torch.cat([
             samples[idot1:i1],
             samples[i1+idot2:i1+i2],
@@ -1166,60 +1173,54 @@ class RWS(Certificate):
             samples[i1+i2+i3+idot4:i1+i2+i3+i4],
             samples[i1+i2+i3+i4+idot5:]
         ])
-        if times is not None and not isinstance(times, dict):
-            raise TypeError("times must be a dict[str, torch.Tensor] or None")
-        times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
-        
+        assert times is not None, "times must be provided"
+        time_tensor = times[XD]
         supp_samples = compression_set if compression_set is not None else set()
-        
         jumps_count = len(supp_samples)
-        
         state_sol = False
         for t in range(learn_loops):
             optimizer.zero_grad()
-            B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-            B = learner(states_only)
-            
-            B_d_states = B[:i1-idot1]
-            B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-            B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-            B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-            B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-            beta = B_sg.min()
-            
+            if self.control:
+                if f_torch is None:
+                    raise ValueError("f_torch must be provided when control synthesis is enabled")
+                samples_dot = f_torch(samples)
             if state_sol:
-                losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
+                V1, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, time_tensor)
+                V2 = learner(states_only)
+                V_D = V2[:i1-idot1]
+                V_I = V2[i1-idot1:i1+i2-idot1-idot2]
+                V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
+                V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
+                V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
+                beta = V_SG.min()
+                losses, supp_loss, learn_accuracy = self.compute_loss(V_I, V_SD, V_D, V_D, V_G, Vdot, beta, Sind if Sind else {}, supp_samples)
                 sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
                 max_loss = losses[sorted_keys[0]]
-                if (t % int(learn_loops / 10) == 0 or learn_loops - t < 10) or t == 1:
-                    log_loss_acc(t, max_loss, accuracy, learner.verbose)
-                
+                if t % 100 == 0 or t == learn_loops - 1:
+                    log_loss_acc(t, max_loss, learn_accuracy, learner.verbose)
                 break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
                     losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete, beta
                 )
-                
                 if updated_best_net is not None:
                     best_net = updated_best_net
-                
                 if break_flag:
                     break
-
                 optimizer.step()
             else:
                 # Warm start (sample independent) phase
                 state_itt = 0
                 while True:
                     optimizer.zero_grad()
-                    B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-                    B = learner(states_only)
-                    B_d_states = B[:i1-idot1]
-                    B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-                    B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-                    B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-                    B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-                    beta = B_sg.min()
+                    V1, Vdot, _ = learner.get_all(samples_with_nexts, samples_dot, time_tensor)
+                    V2 = learner(states_only)
+                    V_D = V2[:i1-idot1]
+                    V_I = V2[i1-idot1:i1+i2-idot1-idot2]
+                    V_SG = V2[i1+i2-idot1-idot2:i1+i2+i3-idot1-idot2-idot3]
+                    V_G = V2[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
+                    V_SD = V2[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
+                    beta = V_SG.min()
                     state_itt += 1
-                    state_loss, _ = self.compute_state_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
+                    state_loss, _ = self.compute_state_loss(V_I, V_SD, V_D, V_D, V_G, Vdot, beta, Sind if Sind else {}, supp_samples)
                     if state_loss == 0:
                         state_sol = True
                         break
@@ -1231,15 +1232,12 @@ class RWS(Certificate):
                         cert_log.debug(f"RWS warm start it {state_itt} loss {loss_v:.6f}")
         if best_net is None:
             best_net = copy.deepcopy(learner)
-        B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
+        B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, time_tensor[:idot1] if time_tensor is not None else None)
         B = best_net(states_only)
-        B_d_states = B[:i1-idot1]
         B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-        B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-        B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-        B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-        beta = B_sg.min()
-        losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
+        B_u = B[i1+i2-idot1-idot2 :]
+        beta = torch.tensor(0.) if B.numel()==0 else B.min()  # placeholder
+        losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d, B_u, Bdot_d, beta, Sind if Sind else {}, supp_samples)
         max_k = max(losses, key=lambda k: losses[k])
         max_loss = losses[max_k]
         best_loss = losses[max_k]
@@ -1257,344 +1255,13 @@ class RWS(Certificate):
             'jumps_count': jumps_count
         }
 
-    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
-        req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal"]).min()) / self.T
-        true_violated = 0
-        violated = 0
-        for traj, traj_deriv, time in zip(S, Sdot, times):
-            traj = torch.tensor(traj.T, dtype=torch.float32)
-            traj_deriv = torch.tensor(np.array(traj_deriv).T, dtype=torch.float32)
-            time = torch.tensor(time, dtype=torch.float32)
-            initial_inds = torch.where(self.D[XI].check_containment(traj))
-            goal_inds = torch.where(self.D[XG].check_containment(traj))
-            V_d = certificate(traj)
-            pred_dots = certificate_dot(traj, traj_deriv, time)
-            goal_inds_0 = torch.where(self.D[XG].check_containment(traj))[0]
-            if not all(self.D[XS].check_containment(traj)) or not any(self.D[XG].check_containment(traj)):
-                true_violated += 1
-            lie_inds = torch.nonzero(V_d <= 0)
-            if any(self.D[XG].check_containment(traj)):
-                lie_inds = [ind.item() for ind in lie_inds if ind not in goal_inds_0]
-            if any(pred_dots[lie_inds] > req_diff):
-                violated += 1
-        return violated, true_violated
-
-
-
-class RWS(Certificate):
-    """Certificate to satisfy a reach-while-stay property.
-
-    Reach While stay must satisfy:
-    forall x in XI, V <= 0,
-    forall x in boundary of XS, V > 0,
-    forall x in A \\ XG, dV/dt < 0
-    A = {x \\in XS| V <=0 }
-
-    http://arxiv.org/abs/1812.02711
-    In addition to the RWS properties, to satisfy RSWS:
-    forall x in border XG: V > \\beta
-    forall x in XG \\ int(B): dV/dt <= 0
-    B = {x in XS | V <= \\beta}
-    Best to ask SMT solver if a beta exists such that the above holds -
-    but currently we don't train for this condition.
-
-    Crucially, this relies only on the border of the safe set,
-    rather than the safe set itself.
-    Since the border must be positive (and the safe invariant negative), this is inline
-    with making the complement (the unsafe set) positive. Therefore, the implementation
-    requires an unsafe set to be passed in, and assumes its border is the same of the border of the safe set.
+# ===== Removed duplicated/obsolete class definition for RSWS mistakenly named RWS =====
+class RSWS(RWS):
+    """Reach-Stay-While-Stay (RSWS) certificate.
+    Extends RWS with additional goal border conditions (beta handling done during verification).
+    Currently inherits behaviour from RWS; override methods here if RSWS-specific training needed.
     """
-
-    def __init__(self, domains, config: ScenAppConfig) -> None:
-        """initialise the RSWS certificate
-        Domains should contain:
-            XI: compact initial set
-            XS: compact safe set
-            dXS: safe border
-            XG: compact goal set
-            XD: whole domain
-
-        Data sets for learn should contain:
-            SI: points from XI
-            SU: points from XD \\ XS
-            SD: points from XS \\ XG (domain less unsafe and goal set)
-
-        """
-        self.domain = domains[XD]
-        self.initial = domains[XI]
-        self.safe = domains[XS]
-        self.safe_border = domains[XS_BORDER]
-        self.goal = domains[XG]
-        self.bias = True
-        self.BORDERS = (XS,)
-        self.D = config.DOMAINS
-        self.T = config.SYSTEM.time_horizon
-        self.max_jumps = getattr(config, 'MAX_JUMPS', -1)
-        self.use_apriori_jumps = getattr(config, 'USE_APRIORI_JUMPS', False)
-
-    def compute_state_loss(self, V_i, V_u, V_d, V_d_states, V_g, Vdot_d, beta, indices: Union[dict, None], supp_samples):
-        margin = 1e-5
-        relu = torch.nn.ReLU()
-        init_loss = relu(V_i + margin).mean()
-        unsafe_loss = relu(-V_u + margin).mean()
-        state_loss = relu(-V_d_states + beta+margin).mean()
-        goal_loss = relu(V_g-(V_i.min()+V_d_states.min())/2+margin).mean()
-        psi_s = init_loss+unsafe_loss+state_loss+goal_loss
-        return psi_s, {}
-
-    def compute_loss(self, V_i, V_u, V_d, V_d_states, V_g, Vdot_d, beta, indices: Union[dict, None], supp_samples) -> tuple[dict, Union[torch.Tensor, int], dict]:
-        """Computes loss function for Barrier certificate.
-
-        Also computes accuracy of the current model.
-
-        Args:
-            B_i (torch.Tensor): Barrier values for initial set
-            B_u (torch.Tensor): Barrier values for unsafe set
-            B_d (torch.Tensor): Barrier values for domain
-            Bdot_d (torch.Tensor): Barrier derivative values for domain
-
-        Returns:
-            tuple[dict, Union[torch.Tensor, int], dict]: losses, supp_loss, and accuracy
-        """
-        torch.set_num_threads(8)
-        # Line 6: g ← ∇_θ l^s(θ) -- gradient of state loss
-        # Line 7: θ ← θ - αg -- step in direction of state loss gradient
-        learn_accuracy = (V_i <= 0).count_nonzero().item() + (
-            V_u > 0
-        ).count_nonzero().item()
-        percent_accuracy_init_unsafe = learn_accuracy * 100 / (len(V_u) + len(V_i))
-        relu = torch.nn.ReLU()
-
-        req_diff = (V_u.min() - V_i.max())/self.T
-        lie_loss = Vdot_d-req_diff
-        lie_accuracy = (
-            100 * ((Vdot_d < req_diff).count_nonzero()).item() / Vdot_d.shape[0]
-        )
-        
-        unsafe_margin = 1e-5
-        init_loss = (relu(V_i).mean())
-        unsafe_loss = relu(-V_u+unsafe_margin).mean()
-        psi_s = init_loss + unsafe_loss
-        
-        if psi_s > 0:
-            lie_loss = relu(lie_loss)
-        
-        # Line 12: Find samples with loss greater than compression set loss
-        supp_max = torch.tensor([-1.0])
-        lie_losses = {}
-        #lie_max = lie_loss.max() 
-        
-        ind_lie_max = lie_loss.argmax()
-        
-        if indices is None:
-            lie_losses = {0: lie_loss.max()}
-            losses = {0: lie_loss.max() + psi_s}
-            supp_loss = -1
-        else:
-            for ind in supp_samples:
-                lie_inds = indices["lie"][ind]
-                if len(lie_inds) > 0:
-                    if lie_loss[lie_inds].max() > supp_max:
-                        supp_max = lie_loss[lie_inds].max()
-                        supp_max_ind = ind
-            
-            #sub_sample = -1
-            supp_loss = supp_max
-
-            if supp_loss != -1:
-                # Line 13: Subgradients of loss for samples in M
-                for i, elem in enumerate(indices["lie"]):
-                    elem_lie_loss = lie_loss[elem].max()
-                    if elem_lie_loss >= supp_max:
-                        lie_losses[i] = elem_lie_loss
-                #if ind_lie_max in elem:
-                #    sub_sample = i
-                #    break
-                
-                supp_loss = supp_max
-                # Line 16: losses = {k: lie_losses[k]+ψ_s for k in lie_losses}
-                losses = {k: lie_losses[k]+psi_s for k in lie_losses} 
-            else:
-                # Line 18: If no sample exceeds compression set, use max loss
-                lie_max = lie_loss.max()
-                ind_lie_max = lie_loss.argmax()
-                losses = {-1: lie_max+psi_s}  # Default value
-                for i, elem in enumerate(indices["lie"]):
-                    if ind_lie_max in elem:
-                        losses = {i: lie_max+psi_s}
-                        break
-
-        #loss = loss + psi_s
-        if supp_loss != -1:
-            supp_loss = supp_loss + psi_s
-
-        accuracy = {
-            "acc init unsafe": percent_accuracy_init_unsafe,
-            "acc lie": lie_accuracy,
-        }
-        return losses, supp_loss, accuracy
-    
-    def learn(
-        # Algorithm 2, Line 1: Fix {ξ^i}_{i=1}^N
-        self,
-        learner: learner.LearnerNN,
-        optimizer: Optimizer,
-        S: dict[str, torch.Tensor],
-        Sdot: dict[str, torch.Tensor],
-        Sind: Union[dict[str, list], None] = None,
-        times: Union[dict[str, torch.Tensor], None] = None,
-        best_loss: float = float('inf'),
-        best_net: Union[learner.LearnerNN, None] = None,
-        f_torch=None,
-        discrete: bool = False,
-        compression_set: Union[set, None] = None,
-    ) -> dict:
-        """
-        :param learner: learner object
-        :param optimizer: torch optimiser
-        :param S: dict of tensors of data
-        :param Sdot: dict of tensors containing f(data)
-        :param compression_set: Optional set to track compression set across calls
-        :return: --
-        """
-        torch.set_num_threads(8)
-        
-        assert len(S) == len(Sdot)
-
-        learn_loops = 1000
-        condition_old = False
-        i1 = S[XD].shape[0]; idot1 = Sdot[XD].shape[0]
-        i2 = S[XI].shape[0]; idot2 = Sdot[XI].shape[0]
-        i3 = S[XG].shape[0]; idot3 = 0
-        idot4 = Sdot[XS_BORDER].shape[0] if type(Sdot[XS_BORDER]) is not list else 0
-        i4 = S[XS_BORDER].shape[0]
-        idot5 = len(Sdot[XG_BORDER])
-
-        label_order = [XD, XI, XG, XS_BORDER, XG_BORDER]
-        samples = torch.cat([S[label] for label in label_order if type(S[label]) is not list])
-
-        samples_dot = Sdot[XD]
-        samples_with_nexts = S[XD][:idot1]
-        states_only = torch.cat([
-            samples[idot1:i1],
-            samples[i1+idot2:i1+i2],
-            samples[i1+i2+idot3:i1+i2+i3],
-            samples[i1+i2+i3+idot4:i1+i2+i3+i4],
-            samples[i1+i2+i3+i4+idot5:]
-        ])
-        if times is not None and not isinstance(times, dict):
-            raise TypeError("times must be a dict[str, torch.Tensor] or None")
-        times_cat = torch.cat([times[label] for label in label_order if type(times[label]) is not list]) if times is not None else None
-        
-        supp_samples = compression_set if compression_set is not None else set()
-        
-        jumps_count = len(supp_samples)
-        
-        state_sol = False
-        for t in range(learn_loops):
-            optimizer.zero_grad()
-            B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-            B = learner(states_only)
-            
-            B_d_states = B[:i1-idot1]
-            B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-            B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-            B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-            B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-            beta = B_sg.min()
-            
-            if state_sol:
-                losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
-                sorted_keys = sorted(losses, key=lambda k: losses[k], reverse=True)
-                max_loss = losses[sorted_keys[0]]
-                if (t % int(learn_loops / 10) == 0 or learn_loops - t < 10) or t == 1:
-                    log_loss_acc(t, max_loss, accuracy, learner.verbose)
-                
-                break_flag, _, supp_samples, best_loss, updated_best_net = self.subsurface_algorithm(
-                    losses, supp_loss, supp_samples, best_loss, learner, optimizer, discrete, beta
-                )
-                
-                if updated_best_net is not None:
-                    best_net = updated_best_net
-                
-                if break_flag:
-                    break
-
-                optimizer.step()
-            else:
-                # Warm start (sample independent) phase
-                state_itt = 0
-                while True:
-                    optimizer.zero_grad()
-                    B_d, Bdot_d, _ = learner.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-                    B = learner(states_only)
-                    B_d_states = B[:i1-idot1]
-                    B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-                    B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-                    B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-                    B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-                    beta = B_sg.min()
-                    state_itt += 1
-                    state_loss, _ = self.compute_state_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
-                    if state_loss == 0:
-                        state_sol = True
-                        break
-                    if isinstance(state_loss, torch.Tensor):
-                        state_loss.backward()
-                    optimizer.step()
-                    if state_itt % 500 == 0:
-                        loss_v = state_loss.item() if hasattr(state_loss, 'item') else state_loss
-                        cert_log.debug(f"RWS warm start it {state_itt} loss {loss_v:.6f}")
-        if best_net is None:
-            best_net = copy.deepcopy(learner)
-        B_d, Bdot_d, _ = best_net.get_all(samples_with_nexts, samples_dot, times_cat[:idot1] if times_cat is not None else None)
-        B = best_net(states_only)
-        B_d_states = B[:i1-idot1]
-        B_i = B[i1-idot1 : i1 + i2-idot1-idot2]
-        B_g = B[i1 + i2-idot1-idot2 :i1+i2+i3-idot1-idot2-idot3]
-        B_u = B[i1+i2+i3-idot1-idot2-idot3:i1+i2+i3+i4-idot1-idot2-idot3-idot4]
-        B_sg = B[i1+i2+i3+i4-idot1-idot2-idot3-idot4:]
-        beta = B_sg.min()
-        losses, supp_loss, accuracy = self.compute_loss(B_i, B_u, B_d, B_d_states, B_g, Bdot_d, beta, Sind, supp_samples)
-        max_k = max(losses, key=lambda k: losses[k])
-        max_loss = losses[max_k]
-        best_loss = losses[max_k]
-        if (not self.use_apriori_jumps) or self.max_jumps == -1 or jumps_count < self.max_jumps:
-            supp_samples = supp_samples.union({max_k})
-            jumps_count += 1
-        supp_samples.discard(-1)
-        best_net = safe_set_beta(best_net, beta)
-        return {
-            ScenAppStateKeys.loss: max_loss,
-            'best_loss': best_loss,
-            'best_net': best_net,
-            'compression_set': supp_samples,
-            'compression_set_size': len(supp_samples),
-            'jumps_count': jumps_count
-        }
-
-    def get_violations(self, certificate, certificate_dot, S, Sdot, times, state_data):
-        req_diff = (certificate(state_data["init"]).max() - certificate(state_data["goal"]).min()) / self.T
-        true_violated = 0
-        violated = 0
-        for traj, traj_deriv, time in zip(S, Sdot, times):
-            traj = torch.tensor(traj.T, dtype=torch.float32)
-            traj_deriv = torch.tensor(np.array(traj_deriv).T, dtype=torch.float32)
-            time = torch.tensor(time, dtype=torch.float32)
-            initial_inds = torch.where(self.D[XI].check_containment(traj))
-            goal_inds = torch.where(self.D[XG].check_containment(traj))
-            V_d = certificate(traj)
-            pred_dots = certificate_dot(traj, traj_deriv, time)
-            goal_inds_0 = torch.where(self.D[XG].check_containment(traj))[0]
-            if not all(self.D[XS].check_containment(traj)) or not any(self.D[XG].check_containment(traj)):
-                true_violated += 1
-            lie_inds = torch.nonzero(V_d <= 0)
-            if any(self.D[XG].check_containment(traj)):
-                lie_inds = [ind.item() for ind in lie_inds if ind not in goal_inds_0]
-            if any(pred_dots[lie_inds] > req_diff):
-                violated += 1
-        return violated, true_violated
-
+    pass
 
 
 class DoubleCertificate(Certificate):
