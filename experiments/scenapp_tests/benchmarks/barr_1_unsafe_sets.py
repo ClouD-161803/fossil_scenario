@@ -112,8 +112,8 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([0.25, -1]), tuple([1, 1]))
     XU = UnsafeDomain()
 
-    n_trajectory_data = 100
-    n_background_data = 1000
+    n_trajectory_data = 1000
+    n_background_data = 5000
     num_runs = 1
     
     # Define sets for BarrierAlt certificate
@@ -183,8 +183,8 @@ def test_lnn(args):
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
         BETA=(0.1,),
-        # MAX_JUMPS=1,
-        # USE_APRIORI_JUMPS=False
+        MAX_JUMPS=2,
+        USE_APRIORI_JUMPS=True
     ) for datum in data]
     
     with Pool(processes=num_runs) as pool:

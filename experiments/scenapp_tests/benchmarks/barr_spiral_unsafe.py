@@ -8,6 +8,11 @@ import timeit
 import random
 import numpy as np
 import torch
+import logging
+import argparse
+
+# Configure logging at the root level to reduce debug messages
+logging.basicConfig(level=logging.WARNING)
 
 from fossil.scenapp import ScenApp, Result
 from fossil import plotting
@@ -47,7 +52,7 @@ def test_lnn(args):
 
     n_trajectory_data = 100
     n_background_data = 1000
-    max_iters = 2000
+    max_iters = 100  # Reduced from 2000 to 100 to limit debug output
     use_apriori_jumps = True
     max_jumps = 4
     
@@ -99,16 +104,11 @@ def test_lnn(args):
         USE_APRIORI_JUMPS=use_apriori_jumps,
         # CONVEX_NET=True,
     ) for datum in data]
-    opts[0].VERBOSE = 2 
+    
+    # Setting VERBOSE=0 for all options to reduce debug output
+    for opt in opts:
+        opt.VERBOSE = 0  # Set all instances to non-verbose mode
 
-    # PAC = ScenApp(opts)
-    # result = PAC.solve()
-    # main.run_benchmark(
-    #     opts,
-    #     record=args.record,
-    #     plot=args.plot,
-    #     concurrent=args.concurrent,
-    #     repeat=args.repeat,
     with Pool(processes=num_runs) as pool:
         res = pool.map(solve, opts)
     # res = [solve(opt) for opt in opts]
@@ -128,20 +128,42 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
+        SCENAPP_MAX_ITERS=100,  # Reduced from 2500 to 100 to limit debug output
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
         MAX_JUMPS=max_jumps,
         USE_APRIORI_JUMPS=use_apriori_jumps,
         # CONVEX_NET=True,
     )
+    
+    # Force specific contour levels to avoid "Contour levels must be increasing" error
+    custom_levels = [-0.1, 0, 0.1]  # Ensure increasing levels
     axes = plotting.benchmark(
-        system(), res[-1].cert, domains=opts.DOMAINS, xrange=[-5, 5], yrange=[-5, 5]
+        system(), res[-1].cert, 
+        domains=opts.DOMAINS, 
+        xrange=[-5, 5], yrange=[-5, 5],
+        levels=[custom_levels]  # Pass custom levels
     )
     for ax, name in axes:
         plotting.save_plot_with_tags(ax, opts, name + "_unsafe")
 
 
 if __name__ == "__main__":
-    args = main.parse_benchmark_args()
+    # Customize argument parsing to add verbosity control
+    parser = argparse.ArgumentParser(description='Barrier certificate for Spiral unsafe example')
+    parser.add_argument('--plot', action='store_true', help='Whether to plot the results')
+    parser.add_argument('--record', action='store_true', help='Whether to record results')
+    parser.add_argument('--verbose', type=int, default=0, choices=[0, 1, 2], 
+                        help='Verbosity level: 0=WARNING, 1=INFO, 2=DEBUG')
+    
+    args = parser.parse_args()
+    
+    # Set logging level based on verbosity argument
+    if args.verbose == 0:
+        logging.getLogger().setLevel(logging.WARNING)
+    elif args.verbose == 1:
+        logging.getLogger().setLevel(logging.INFO)
+    else:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
     test_lnn(args)
