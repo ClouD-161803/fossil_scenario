@@ -14,7 +14,13 @@ from fossil import certificate
 from fossil import main
 from fossil import analysis
 from experiments.benchmarks import models
-from fossil.consts import *
+from fossil.consts import (
+    ActivationType,
+    ScenAppConfig,
+    CertificateType,
+    TimeDomain,
+    VerifierType,
+)
 from multiprocessing import Pool
 import random
 import numpy as np
@@ -106,8 +112,8 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([0.25, -1]), tuple([1, 1]))
     XU = UnsafeDomain()
 
-    n_trajectory_data = 100
-    n_background_data = 1000
+    n_trajectory_data = 1000
+    n_background_data = 5000
     num_runs = 1
     
     # Define sets for BarrierAlt certificate
@@ -173,22 +179,25 @@ def test_lnn(args):
         N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2000,
+        SCENAPP_MAX_ITERS=20,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
         BETA=(0.1,),
-        # MAX_JUMPS=1,
-        # USE_APRIORI_JUMPS=False
+        MAX_JUMPS=2,
+        USE_APRIORI_JUMPS=True
     ) for datum in data]
     
     with Pool(processes=num_runs) as pool:
         res = pool.map(solve, opts)
     
     if args.plot:
+        # Force specific contour levels to avoid "Contour levels must be increasing" error
+        custom_levels = [-0.1, 0, 0.1]  # Ensure increasing levels
         axes = plotting.benchmark(
             system(), res[-1].cert,
             domains=opts[-1].DOMAINS,
-            xrange=[-2, 2], yrange=[-2, 2]
+            xrange=[-2, 2], yrange=[-2, 2],
+            levels=[custom_levels]  # Pass custom levels
         )
         for ax, name in axes:
             plotting.save_plot_with_tags(ax, opts[-1], name)

@@ -4,8 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-
-# pylint: disable=not-callable
 from experiments.scenapp_tests.benchmarks import models
 from fossil import domains
 from fossil import plotting
@@ -22,58 +20,42 @@ from fossil.consts import (
 import random
 import numpy as np
 import torch
-from functools import partial
 from multiprocessing import Pool
 from fossil.scenapp import ScenApp, Result
 
 # Set seed for reproducibility
 claudio_seed = 42
+print(f"Using seed: {claudio_seed}")
 random.seed(claudio_seed)
 np.random.seed(claudio_seed)
 torch.manual_seed(claudio_seed)
 
-def solve(system, sets, n_data, activations, hidden_neurons, data):
-    opts = ScenAppConfig(
-        DOMAINS=sets,
-        DATA=data,
-        N_DATA=n_data,
-        N_TEST_DATA=n_data,
-        SYSTEM=system,
-        N_VARS=2,
-        CERTIFICATE=CertificateType.RWS,
-        TIME_DOMAIN=TimeDomain.DISCRETE,
-        VERIFIER=VerifierType.SCENAPPNONCONVEX,
-        ACTIVATION=tuple(activations),
-        N_HIDDEN_NEURONS=(hidden_neurons[0],),
-        VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
-        SEED=claudio_seed,
-    )
+def solve(opts):
     PAC = ScenApp(opts)
     result = PAC.solve()
     return result
 
 def test_lnn(args):
-    ###########################################
-    ###
-    #############################################
     n_vars = 2
-    batch_size = 1000
-
+    
     system = models.Spiral
     system.time_horizon = 100
 
     XD = domains.Rectangle(tuple([-5, -5]), tuple([5, 5]))
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
     SU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
-    
     XG = domains.Sphere(tuple([0,0]),1.0)
 
-    # Need to have XD does not contain XG (at least for data generation) otherwise might have conflicting requirements on states????
-    #SU = domains.SetMinus(XD, XS)  # Data for unsafe set
     XS = domains.SetMinus(XD, SU)
-    SD = domains.SetMinus(XS, XG)  # Data for lie set
+    SD = domains.SetMinus(XS, XG)
 
+    n_trajectory_data = 300
+    n_background_data = 1000
+    max_iters = 50
+    use_apriori_jumps = False
+    max_jumps = 4
+    num_runs = 1
+    
     sets = {
         certificate.XD: XD,
         certificate.XI: XI,
@@ -82,64 +64,65 @@ def test_lnn(args):
         certificate.XG: XG,
         certificate.XG_BORDER: XG,
     }
-    n_data = 1000
-    n_state_data = 5000
 
-    # not sure if we should generate data from border of XS? Should be possible for simple borders
     state_data = {
-        certificate.XD: SD._generate_data(n_state_data)(),
-        certificate.XI: XI._generate_data(n_state_data)(),
-        certificate.XS_BORDER: XS._sample_border(n_state_data)(),
-        certificate.XG: XG._generate_data(n_state_data)(),
-        certificate.XG_BORDER: XG._sample_border(n_state_data)()
+        certificate.XD: SD._generate_data(n_background_data)(),
+        certificate.XI: XI._generate_data(n_background_data)(),
+        certificate.XS_BORDER: XS._sample_border(n_background_data)(),
+        certificate.XG: XG._generate_data(n_background_data)(),
+        certificate.XG_BORDER: XG._sample_border(n_background_data)()
     }
-    num_runs = 1
-    init_data = [XI._generate_data(n_data)() for i in range(num_runs)]
-
+    
+    init_data = [XI._generate_data(n_trajectory_data)() for i in range(num_runs)]
     all_data = [system().generate_trajs(init_datum) for init_datum in init_data]
+    data = [{"states_only": state_data, 
+             "full_data": {"times":all_datum[0],
+                          "states":all_datum[1],
+                          "derivs":all_datum[2]}} 
+            for all_datum in all_data]
     
-    data = [{"states_only": state_data, "full_data": {"times":all_datum[0],"states":all_datum[1],"derivs":all_datum[2]}} for all_datum in all_data]
-    # define NN parameters
     activations = [ActivationType.SIGMOID, ActivationType.SIGMOID]
-    n_hidden_neurons = [5] * len(activations)
+    hidden_neurons = [5] * len(activations)
 
-    #main.run_benchmark(
-    #    opts,
-    #    record=args.record,
-    #    plot=args.plot,
-    #    concurrent=args.concurrent,
-    #    repeat=args.repeat,
-    #)
-    
-    part_solve = partial(solve, system, sets, n_data, activations, n_hidden_neurons)
-    #res = [part_solve(data[0])]
-    with Pool(processes=num_runs) as pool:
-        res = pool.map(part_solve, data)
-    
-    opts = ScenAppConfig(
+    opts = [ScenAppConfig(
         N_VARS=2,
         SYSTEM=system,
         DOMAINS=sets,
-        DATA=data[-1],
-        N_DATA=n_data,
-        N_TEST_DATA=n_data,
+        DATA=datum,
+        N_DATA=n_trajectory_data,
+        N_TEST_DATA=n_trajectory_data,
         CERTIFICATE=CertificateType.RWS,
         TIME_DOMAIN=TimeDomain.DISCRETE,
-        #VERIFIER=VerifierType.DREAL,
         ACTIVATION=tuple(activations),
-        N_HIDDEN_NEURONS=(n_hidden_neurons[0],),
+        N_HIDDEN_NEURONS=(hidden_neurons[0],),
         SYMMETRIC_BELT=True,
         VERBOSE=0,
-        SCENAPP_MAX_ITERS=2500,
+        SCENAPP_MAX_ITERS=max_iters,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
-        #CONVEX_NET=True,
-    )
-    axes = plotting.benchmark(
-        system(), res[-1].cert, domains=opts.DOMAINS, xrange=[-5, 5], yrange=[-5, 5]
-    )
-    for ax, name in axes:
-        plotting.save_plot_with_tags(ax, opts, name)
+        MAX_JUMPS=max_jumps,
+        USE_APRIORI_JUMPS=use_apriori_jumps,
+    ) for datum in data]
+    
+    with Pool(processes=num_runs) as pool:
+        res = pool.map(solve, opts)
+
+    if args.plot:
+        custom_levels = [-0.1, 0, 0.1]
+        axes = plotting.benchmark(
+            system(), res[-1].cert, 
+            domains=sets,
+            xrange=[-5, 5], yrange=[-5, 5],
+            levels=[custom_levels]
+        )
+        
+        for ax, name in axes:
+            plotting.save_plot_with_tags(ax, opts[-1], name)
+    
+    if args.record:
+        for i, result in enumerate(res):
+            rec = analysis.Recorder()
+            rec.record(opts[i], result, 0)
 
 
 if __name__ == "__main__":

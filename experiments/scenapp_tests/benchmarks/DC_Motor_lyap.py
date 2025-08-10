@@ -41,8 +41,8 @@ def test_lnn(args):
     # Define the safe region
     XS = domains.Rectangle(tuple([0.1, 0.1]), tuple([0.4, 0.9]))
 
-    n_trajectory_data = 10
-    n_background_data = 50
+    n_trajectory_data = 100
+    n_background_data = 500
     num_runs = 1
 
     # Define sets for Practical_Lyapunov certificate
