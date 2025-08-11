@@ -19,6 +19,12 @@ import numpy as np
 from scipy.stats import beta as betaF
 from scipy.special import betaincinv
 
+# Optional CSV data loader (import guarded for backward compatibility)
+try:  # pragma: no cover
+    from fossil import data_loader
+except Exception:  # pragma: no cover
+    data_loader = None
+
 scenapp_log = logger.Logger.setup_logger(__name__)
 
 class Stats(NamedTuple):
@@ -37,7 +43,24 @@ class Result(NamedTuple):
 class SingleScenApp:
     def __init__(self, config: ScenAppConfig):
         self.config = config
-        
+
+        # CSV ingestion path (only if explicitly enabled)
+        if getattr(self.config, "USE_CSV_DATA", False):
+            if data_loader is None:
+                raise ImportError("USE_CSV_DATA=True but fossil.data_loader missing")
+            if self.config.TRAIN_CSV:
+                scenapp_log.info(f"Loading training trajectories from CSV: {self.config.TRAIN_CSV}")
+                train_trajs = data_loader.load_csv_trajectories(
+                    self.config.TRAIN_CSV,
+                    self.config.N_VARS,
+                    has_derivs=getattr(self.config, "CSV_HAS_DERIVS", False),
+                    id_column=getattr(self.config, "CSV_ID_COLUMN", None),
+                )
+                self.config.DATA = data_loader.to_training_data(train_trajs)
+            elif getattr(self.config, "VERIFY_ONLY", False) and not self.config.DATA:
+                # Create minimal empty DATA object to satisfy downstream code; test CSV will be used later.
+                self.config.DATA = {"full_data": {"times": [], "states": [], "derivs": []}, "states_only": {}}
+
         self.x, self.x_map, self.domains = self._initialise_domains()
         if self.config.DOMAINS is None:
             self.config.DOMAINS = {}
@@ -46,6 +69,16 @@ class SingleScenApp:
         self.S, self.S_traj = self._initialise_data(self.config.DATA["full_data"], self.config.DATA["states_only"]) # Needs editing
         self.certificate = self._initialise_certificate()
         self.learner = self._initialise_learner()
+        # Load pretrained network if verification-only with provided path
+        if getattr(self.config, "VERIFY_ONLY", False) and getattr(self.config, "NET_PATH", None):
+            try:
+                scenapp_log.info(f"Loading pretrained network from {self.config.NET_PATH}")
+                sd = torch.load(self.config.NET_PATH, map_location="cpu")
+                self.learner.load_state_dict(sd)
+                self.learner.eval()
+            except Exception as e:  # pragma: no cover
+                scenapp_log.error(f"Failed to load network: {e}")
+                raise
         if config.CONVEX_NET:
             self.a_priori_supps = sum([param.numel() for param in self.learner.parameters()]) # Take this and add any violations for convex
         else:
@@ -477,29 +510,46 @@ class SingleScenApp:
             raise ValueError("No data provided in config")
         state_data = self.config.DATA["states_only"]
         torch.manual_seed(clock_gettime(0))      #allows different samples when running in parallel
-        try:
-            if self.config.DOMAINS is not None and "init" in self.config.DOMAINS:
-                test_data = self.config.DOMAINS["init"]._generate_data(n_data)()
-            else:
-                raise KeyError("init domain not found")
-        except KeyError:
-            if self.config.DOMAINS is not None and "lie" in self.config.DOMAINS:
-                test_data = self.config.DOMAINS["lie"]._generate_data(n_data)()
-            else:
-                raise ValueError("Neither 'init' nor 'lie' domains are available")
 
-        all_test_data = self.config.SYSTEM().generate_trajs(test_data)
-        data = {"states_only": None, "full_data": {"times":all_test_data[0],"states":all_test_data[1],"derivs":all_test_data[2]}}
-        num_violations, true_violations = self.certificate.get_violations(cert, cert_deriv, data["full_data"]["states"], data["full_data"]["derivs"], data["full_data"]["times"], state_data)
-        k = num_violations
-        k = true_violations # use this for direct property validation
-        N = n_data
+        # CSV based verification path
+        if getattr(self.config, "USE_CSV_DATA", False) and self.config.TEST_CSV:
+            if data_loader is None:
+                raise ImportError("CSV verification requested but data_loader not available")
+            scenapp_log.info(f"Loading verification trajectories from CSV: {self.config.TEST_CSV}")
+            test_trajs = data_loader.load_csv_trajectories(
+                self.config.TEST_CSV,
+                self.config.N_VARS,
+                has_derivs=getattr(self.config, "CSV_HAS_DERIVS", False),
+                id_column=getattr(self.config, "CSV_ID_COLUMN", None),
+            )
+            num_violations, true_violations = self.certificate.get_violations(
+                cert, cert_deriv, test_trajs["states"], test_trajs["derivs"], test_trajs["times"], state_data
+            )
+            N = max(1, len(test_trajs["states"]))
+        else:
+            # Original synthetic generation path
+            try:
+                if self.config.DOMAINS is not None and "init" in self.config.DOMAINS:
+                    test_data = self.config.DOMAINS["init"]._generate_data(n_data)()
+                else:
+                    raise KeyError("init domain not found")
+            except KeyError:
+                if self.config.DOMAINS is not None and "lie" in self.config.DOMAINS:
+                    test_data = self.config.DOMAINS["lie"]._generate_data(n_data)()
+                else:
+                    raise ValueError("Neither 'init' nor 'lie' domains are available")
+            all_test_data = self.config.SYSTEM().generate_trajs(test_data)
+            data = {"states_only": None, "full_data": {"times":all_test_data[0],"states":all_test_data[1],"derivs":all_test_data[2]}}
+            num_violations, true_violations = self.certificate.get_violations(cert, cert_deriv, data["full_data"]["states"], data["full_data"]["derivs"], data["full_data"]["times"], state_data)
+            N = n_data
+
+        k = true_violations  # direct property validation
         beta_bar = self.config.BETA[0]/N
         d = 1
         eps = betaF.ppf(1-beta_bar, k+d, N-(d+k)+1) 
         print("Direct Property scenario approach risk: {:.5f}".format(eps))
-        print("Certificate violation rate: {:.3f}".format(num_violations/n_data))
-        print("Property violation rate: {:.3f}".format(true_violations/n_data))
+        print("Certificate violation rate: {:.3f}".format(num_violations/max(1,N)))
+        print("Property violation rate: {:.3f}".format(true_violations/max(1,N)))
 
         if hasattr(eps, 'item'):
             return float(eps.item())
@@ -530,85 +580,79 @@ class SingleScenApp:
             state["supps"] = set()
         state["supp_len"] = self.a_priori_supps
 
-        while not stop:
-            scenapp_log.debug("\033[1m Learner \033[0m")
-            outputs = self.learner.get(**state)
-            state = {**state, **outputs}
-            
-            if self.config.CONVEX_NET:
-                state["supps"] = outputs.get("compression_set", outputs.get("new_supps", state["supps"]))
-            else:
-                state["supps"] = state["supps"].union(outputs.get("compression_set", outputs.get("new_supps", set())))
-            state = self.update_controller(state)
-
-            if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:
-                
-                scenapp_log.debug("\033[1m Verifier \033[0m")
-                outputs = self.verifier.get(**state)
+        # Fast path: verification only (skip optimisation loop)
+        if getattr(self.config, "VERIFY_ONLY", False):
+            scenapp_log.info("Verification-only mode: skipping training loop")
+            state[ScenAppStateKeys.best_net] = self.learner
+            state[ScenAppStateKeys.bounds] = float('nan')
+            stop = True
+        else:
+            while not stop:
+                scenapp_log.debug("\033[1m Learner \033[0m")
+                outputs = self.learner.get(**state)
                 state = {**state, **outputs}
-                stop = self.process_certificate(S, state, iters)
-                self.print_verification_info(state, include_discarded=True)
-                
-            elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
-                
-                if self.config.CALC_DISC_GAP:
-                    scenapp_log.debug("negative best loss")
-                    delta = self.est_disc_gap(state)
-                    if state["best_loss"] > - delta:
-                        iters += 1
-                        old_loss = state["loss"]
-                        old_best = state["best_loss"]
-                        scenapp_log.info("Required delta: {:.5f}".format(delta))
-                        scenapp_log.info("Iteration: {}".format(iters))
+                if self.config.CONVEX_NET:
+                    state["supps"] = outputs.get("compression_set", outputs.get("new_supps", state["supps"]))
+                else:
+                    state["supps"] = state["supps"].union(outputs.get("compression_set", outputs.get("new_supps", set())))
+                state = self.update_controller(state)
+
+                if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:
+                    scenapp_log.debug("\033[1m Verifier \033[0m")
+                    outputs = self.verifier.get(**state)
+                    state = {**state, **outputs}
+                    stop = self.process_certificate(S, state, iters)
+                    self.print_verification_info(state, include_discarded=True)
+                elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
+                    if self.config.CALC_DISC_GAP:
+                        scenapp_log.debug("negative best loss")
+                        delta = self.est_disc_gap(state)
+                        if state["best_loss"] > - delta:
+                            iters += 1
+                            old_loss = state["loss"]
+                            old_best = state["best_loss"]
+                            scenapp_log.info("Required delta: {:.5f}".format(delta))
+                            scenapp_log.info("Iteration: {}".format(iters))
+                        else:
+                            scenapp_log.info("Required delta: {:.5f}".format(delta))
+                            scenapp_log.info("Best loss: {:.5f}".format(state["best_loss"]))
+                            scenapp_log.debug("\033[1m Verifier \033[0m")
+                            outputs = self.verifier.get(**state)
+                            state = {**state, **outputs}
+                            stop = self.process_certificate(S, state, iters)
+                            self.print_verification_info(state)
                     else:
-                        scenapp_log.info("Required delta: {:.5f}".format(delta))
-                        scenapp_log.info("Best loss: {:.5f}".format(state["best_loss"]))
                         scenapp_log.debug("\033[1m Verifier \033[0m")
                         outputs = self.verifier.get(**state)
                         state = {**state, **outputs}
                         stop = self.process_certificate(S, state, iters)
                         self.print_verification_info(state)
-
+                elif state[ScenAppStateKeys.verification_timed_out]:
+                    scenapp_log.warning("Verification timed out")
+                    stop = True
+                    state[ScenAppStateKeys.bounds] = None
+                elif self.config.SCENAPP_MAX_ITERS <= iters:
+                    scenapp_log.warning("Out of iterations")
+                    stop = True
+                    state[ScenAppStateKeys.bounds] = None
+                elif not self.config.CONVEX_NET and torch.abs(state["best_loss"]-old_best) < converge_tol:
+                    scenapp_log.info("Convergence reached, but failed to find valid certificate, discarding samples")
+                    self.discard(state)
+                    scenapp_log.debug("Discarded {} samples so far".format(len(state["discarded"])))
+                    iters += 1
+                    old_loss = state["loss"]
+                    old_best = state["best_loss"]
+                    scenapp_log.info("Iteration: {}".format(iters))
+                elif not (state[ScenAppStateKeys.found] or state[ScenAppStateKeys.verification_timed_out]):
+                    iters += 1
+                    old_loss = state["loss"]
+                    old_best = state["best_loss"]
+                    scenapp_log.info("Iteration: {}".format(iters))
+                if isinstance(old_best, (int, float)):
+                    scenapp_log.info("Best loss: {:.10f}".format(old_best))
                 else:
-                    scenapp_log.debug("\033[1m Verifier \033[0m")
-                    outputs = self.verifier.get(**state)
-                    state = {**state, **outputs}
-                    stop = self.process_certificate(S, state, iters)
-                    self.print_verification_info(state)
-            
-            elif state[ScenAppStateKeys.verification_timed_out]:
-                scenapp_log.warning("Verification timed out")
-                stop = True
-                state[ScenAppStateKeys.bounds] = None
-            elif (
-                    self.config.SCENAPP_MAX_ITERS <= iters
-                    ):
-                scenapp_log.warning("Out of iterations")
-                stop = True
-                state[ScenAppStateKeys.bounds] = None
-            elif not self.config.CONVEX_NET and torch.abs(state["best_loss"]-old_best) < converge_tol:
-                scenapp_log.info("Convergence reached, but failed to find valid certificate, discarding samples")
-                self.discard(state)
-                scenapp_log.debug("Discarded {} samples so far".format(len(state["discarded"])))
-                iters += 1
-                old_loss = state["loss"]
-                old_best = state["best_loss"]
-                scenapp_log.info("Iteration: {}".format(iters))
-
-            elif not (
-                    state[ScenAppStateKeys.found]
-                    or state[ScenAppStateKeys.verification_timed_out]
-                    ):
-
-                iters += 1
-                old_loss = state["loss"]
-                old_best = state["best_loss"]
-                scenapp_log.info("Iteration: {}".format(iters))
-            if isinstance(old_best, (int, float)):
-                scenapp_log.info("Best loss: {:.10f}".format(old_best))
-            else:
-                scenapp_log.info("Best loss: {:.10f}".format(old_best.item()))
-            scenapp_log.info("Current loss: {:.10f}".format(state["loss"].item()))
+                    scenapp_log.info("Best loss: {:.10f}".format(old_best.item()))
+                scenapp_log.info("Current loss: {:.10f}".format(state["loss"].item()))
         state = self.process_timers(state)
 
         stats = Stats(
@@ -763,6 +807,13 @@ class DoubleScenApp(SingleScenApp):
         else:
             state["supps"] = set()
         state["supp_len"] = self.a_priori_supps
+        # Verification-only shortcut (skip optimisation loop)
+        if getattr(self.config, "VERIFY_ONLY", False):
+            scenapp_log.info("DoubleScenApp verification-only mode: skipping training loop")
+            # Choose Lyapunov learner as representative network for verification
+            state[ScenAppStateKeys.best_net] = self.lyap_learner
+            state[ScenAppStateKeys.bounds] = float('nan')
+            stop = True
         while not stop:
             opt_state_dict = state[ScenAppStateKeys.optimizer].state_dict()
             opt_state_dict["param_groups"][0]["lr"] = 1/(iters+1)

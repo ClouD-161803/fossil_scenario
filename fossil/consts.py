@@ -184,6 +184,21 @@ class ScenAppConfig:
     DOMAINS: dict[str, Any] | None = None
     # DATA can be arbitrary nested dicts of tensors or other structures
     DATA: dict[str, Any] | None = None
+    # ------------------------------------------------------------------
+    # Dataset / CSV support additions (backwards compatible):
+    # If USE_CSV_DATA is True and TRAIN_CSV provided, trajectories are
+    # loaded from CSV instead of generated synthetically. TEST_CSV is
+    # used for a posteriori verification (esp. when VERIFY_ONLY True).
+    # NET_PATH optionally points to a saved model (state_dict) to load
+    # when performing verification-only runs.
+    # ------------------------------------------------------------------
+    USE_CSV_DATA: bool = False              # master switch for CSV ingestion
+    VERIFY_ONLY: bool = False               # skip training loop, just verify
+    TRAIN_CSV: list[str] | None = None      # training trajectory CSV paths
+    TEST_CSV: list[str] | None = None       # test / verification CSV paths
+    CSV_HAS_DERIVS: bool = False            # if CSV already includes derivatives
+    CSV_ID_COLUMN: str | None = None        # column name that groups trajectory IDs (None => one trajectory per file)
+    NET_PATH: str | None = None             # optional path to saved torch model (state_dict)
     SYMMETRIC_BELT: bool = False
     SCENAPP_MAX_ITERS: int = 10
     SCENAPP_MAX_TIME_S: float = math.inf  # in sec
