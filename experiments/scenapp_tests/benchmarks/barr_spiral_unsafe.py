@@ -53,7 +53,7 @@ def test_lnn(args):
     n_trajectory_data = 100
     n_background_data = 1000
     max_iters = 100  # Reduced from 2000 to 100 to limit debug output
-    use_apriori_jumps = True
+    use_apriori_jumps = False
     max_jumps = 4
     
     sets = {

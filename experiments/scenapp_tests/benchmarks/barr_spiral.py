@@ -46,8 +46,8 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
     XU = domains.Rectangle(tuple([-5,-1]), tuple([-4.5,1]))
 
-    n_trajectory_data = 100
-    n_background_data = 100
+    n_trajectory_data = 1000
+    n_background_data = 5000
     max_iters = 20
     use_apriori_jumps = True
     max_jumps = 4
@@ -98,8 +98,8 @@ def test_lnn(args):
         SCENAPP_MAX_ITERS=max_iters,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
         SEED=claudio_seed,
-        MAX_JUMPS=max_jumps,
-        USE_APRIORI_JUMPS=use_apriori_jumps,
+        # MAX_JUMPS=max_jumps,
+        # USE_APRIORI_JUMPS=use_apriori_jumps,
         #CONVEX_NET=True,
     ) for datum in data]
 
