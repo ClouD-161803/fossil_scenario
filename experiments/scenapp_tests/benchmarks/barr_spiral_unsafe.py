@@ -50,11 +50,11 @@ def test_lnn(args):
     XI = domains.Rectangle(tuple([-1, 4]), tuple([1, 4.5]))
     XU = domains.Rectangle(tuple([-5,-2]), tuple([-4,2]))
 
-    n_trajectory_data = 100
+    n_trajectory_data = 1000
     n_background_data = 1000
-    max_iters = 100  # Reduced from 2000 to 100 to limit debug output
-    use_apriori_jumps = False
-    max_jumps = 4
+    max_iters = 100
+    use_apriori_jumps = True
+    max_jumps = 3
     
     sets = {
         certificate.XD: XD,
