@@ -28,7 +28,7 @@ from multiprocessing import Pool
 
 import time
 # claudio_seed = int(time.time()) % 100000000
-claudio_seed = 42
+claudio_seed = 54308950
 print(f"Using seed: {claudio_seed}")
 random.seed(claudio_seed)
 np.random.seed(claudio_seed)
