@@ -52,9 +52,9 @@ def test_lnn(args):
 
     n_trajectory_data = 1000
     n_background_data = 1000
-    max_iters = 300
+    max_iters = 5000
     use_apriori_jumps = True
-    max_jumps = 2
+    max_jumps = 1
     
     sets = {
         certificate.XD: XD,
