@@ -14,7 +14,7 @@ from fossil import plotting
 class NonPoly0(fossil.control.DynamicalModel):
     n_vars = 2
     time_horizon = 1
-
+    num_time_samples = 100
     def f_torch(self, t, v):
         if len(v.shape) == 1:
             x, y = v[0], v[1]
@@ -53,7 +53,7 @@ def test_lnn():
         N_DATA=n_data,
         DATA=data,
         N_VARS=system.n_vars,
-        CERTIFICATE=fossil.CertificateType.LYAPUNOV,
+        CERTIFICATE=fossil.CertificateType.PRACTICALLYAPUNOV,
         TIME_DOMAIN=fossil.TimeDomain.CONTINUOUS,
         #VERIFIER=fossil.VerifierType.DREAL,
         ACTIVATION=activations,

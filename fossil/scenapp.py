@@ -1,4 +1,4 @@
-from typing import NamedTuple, Union
+from typing import NamedTuple, Union, Tuple, Any
 
 import fossil.learner as learner
 import fossil.verifier as verifier
@@ -14,8 +14,10 @@ import torch
 import copy
 import sympy as sp
 from scipy import stats
+import numpy as np
 
 from scipy.stats import beta as betaF
+from scipy.special import betaincinv
 
 scenapp_log = logger.Logger.setup_logger(__name__)
 
@@ -37,6 +39,10 @@ class SingleScenApp:
         self.config = config
         
         self.x, self.x_map, self.domains = self._initialise_domains()
+        if self.config.DOMAINS is None:
+            self.config.DOMAINS = {}
+        if not self.config.DATA:
+            raise ValueError("No data provided in config")
         self.S, self.S_traj = self._initialise_data(self.config.DATA["full_data"], self.config.DATA["states_only"]) # Needs editing
         self.certificate = self._initialise_certificate()
         self.learner = self._initialise_learner()
@@ -50,6 +56,9 @@ class SingleScenApp:
             logger.Logger.set_logger_level(self.config.VERBOSE)
     
     def _initialise_domains(self):
+        if self.config.DOMAINS is None:
+            self.config.DOMAINS = {}
+            
         x = verifier.get_verifier_type(self.config.VERIFIER).new_vars(
             self.config.N_VARS
             )
@@ -60,7 +69,7 @@ class SingleScenApp:
                     else domain.generate_domain(x)
                     for label, domain in self.config.DOMAINS.items()
                   }
-        if self.config.CERTIFICATE == CertificateType.RAR:
+        if self.config.CERTIFICATE == CertificateType.RAR and self.config.DOMAINS is not None and certificate.XF in self.config.DOMAINS:
             domains[certificate.XNF] = self.config.DOMAINS[
                                         certificate.XF
                                                 ].generate_complement(x)
@@ -100,7 +109,6 @@ class SingleScenApp:
                     self.config.BETA,
                     self.config.N_DATA,
                     num_params,
-                    self.config.VERBOSE,
                             )
         return verifier_instance
 
@@ -119,34 +127,36 @@ class SingleScenApp:
             curr_ind += elem_len
 
         domained_data = {"states":{},"times":{},"derivs":{}, "indices":{}}
-        for key in self.config.DOMAINS:
-            domain = self.config.DOMAINS[key]
-            domained_data["states"][key] = []
-            domained_data["derivs"][key] = []
-            domained_data["times"][key] = []
-            domained_data["indices"][key] = [[] for elem in traj_inds]
-            curr_ind = 0
-            for ind, elem in enumerate(lumped_data["states"].T):
-                if domain.check_containment(elem.expand([1,elem.size(dim=0)])):
-                    for i, index in enumerate(traj_inds):
-                        if ind in range(*index):
-                            sample_ind = i
-                            break
-                    domained_data["indices"][key][sample_ind].append(curr_ind)
-                    curr_ind += 1
-                    domained_data["states"][key].append(lumped_data["states"][:,ind])
-                    domained_data["derivs"][key].append(lumped_data["derivs"][:,ind])
-                    domained_data["times"][key].append(lumped_data["times"][ind])
-                    
-            if len(domained_data["states"][key]) > 0:
-                if key in state_data:
-                    domained_data["states"][key] = torch.cat((torch.stack(domained_data["states"][key]), state_data[key]))
+        if self.config.DOMAINS is not None:
+            for key in self.config.DOMAINS:
+                domain = self.config.DOMAINS[key]
+                domained_data["states"][key] = []
+                domained_data["derivs"][key] = []
+                domained_data["times"][key] = []
+                domained_data["indices"][key] = [[] for elem in traj_inds]
+                curr_ind = 0
+                for ind, elem in enumerate(lumped_data["states"].T):
+                    if domain.check_containment(elem.expand([1,elem.size(dim=0)])):
+                        sample_ind = 0  # Initialize with default value
+                        for i, index in enumerate(traj_inds):
+                            if ind in range(*index):
+                                sample_ind = i
+                                break
+                        domained_data["indices"][key][sample_ind].append(curr_ind)
+                        curr_ind += 1
+                        domained_data["states"][key].append(lumped_data["states"][:,ind])
+                        domained_data["derivs"][key].append(lumped_data["derivs"][:,ind])
+                        domained_data["times"][key].append(lumped_data["times"][ind])
+                        
+                if len(domained_data["states"][key]) > 0:
+                    if key in state_data:
+                        domained_data["states"][key] = torch.cat((torch.stack(domained_data["states"][key]), state_data[key]))
+                    else:
+                        domained_data["states"][key] = torch.stack(domained_data["states"][key])
+                    domained_data["derivs"][key] = torch.stack(domained_data["derivs"][key])
+                    domained_data["times"][key] = torch.stack(domained_data["times"][key])
                 else:
-                    domained_data["states"][key] = torch.stack(domained_data["states"][key])
-                domained_data["derivs"][key] = torch.stack(domained_data["derivs"][key])
-                domained_data["times"][key] = torch.stack(domained_data["times"][key])
-            else:
-                domained_data["states"][key] = state_data[key]
+                    domained_data["states"][key] = state_data[key]
         
         return domained_data, traj_data
 
@@ -160,42 +170,92 @@ class SingleScenApp:
 
     def update_controller(self, state):
         scenapp_log.debug("Updating controller does nothing")
-        return state 
+        return state
 
-    def a_post_verify(self, cert, cert_deriv, n_data):
-        state_data = self.config.DATA["states_only"]
-        torch.manual_seed(clock_gettime(0))      #allows different samples when running in parallel
-        try:
-            test_data = self.config.DOMAINS["init"]._generate_data(n_data)()
-        except KeyError:
-            test_data = self.config.DOMAINS["lie"]._generate_data(n_data)()
-
-        all_test_data = self.config.SYSTEM().generate_trajs(test_data)
-        data = {"states_only": None, "full_data": {"times":all_test_data[0],"states":all_test_data[1],"derivs":all_test_data[2]}}
-        num_violations, true_violations = self.certificate.get_violations(cert, cert_deriv, data["full_data"]["states"], data["full_data"]["derivs"], data["full_data"]["times"], state_data)
-        k = num_violations
-        k = true_violations # use this for direct property validation
-        N = n_data
-        beta_bar = self.config.BETA[0]/N
-        d = 1
-        eps = betaF.ppf(1-beta_bar, k+d, N-(d+k)+1) 
-        print("Direct Property scenario approach risk: {:.5f}".format(eps))
-        print("Certificate violation rate: {:.3f}".format(num_violations/n_data))
-        print("Property violation rate: {:.3f}".format(true_violations/n_data))
-        return eps
-
-
-    def discard(self, state):
+    def calculate_compression_set_size(self, state):
+        """
+        Calculate the compression set size based on support samples.
         
+        Args:
+            state: Current state dictionary containing support information
+            
+        Returns:
+            int: The calculated compression set size
+        """
+        if ScenAppStateKeys.compression_set_size in state:
+            return state[ScenAppStateKeys.compression_set_size]
+        elif isinstance(state["supps"], dict):
+            comp_size = state["supps"]["active"] + state["supps"]["relaxed"]
+        else:
+            comp_size = len(state["supps"].union(state["discarded"]))
+        return comp_size
+    
+    def compute_modified_apriori_epsilon(self) -> Union[float, None]:
+        """
+        Compute the modified a priori epsilon from:
+            sum_{k=0}^{J+2-d} C(N,k) eps^k (1-eps)^{N-k} = beta
+        Only computed when USE_APRIORI_JUMPS is True.
+        """
+        use_apriori = getattr(self.config, 'USE_APRIORI_JUMPS', False)
+        if not use_apriori:
+            return None
+        J = getattr(self.config, 'MAX_JUMPS', None)
+        if J is None or J < 0:
+            return None
+        N = int(self.config.N_DATA)
+        d = int(getattr(self.config, 'D_APRIORI', 1))
+        K = int(J + 2 - d)
+        K = max(0, min(K, N))
+        beta_cfg = getattr(self.config, 'BETA', 0.01)
+        try:
+            beta_val = float(np.array(beta_cfg).reshape(-1)[0])
+        except Exception:
+            beta_val = float(beta_cfg if not isinstance(beta_cfg, (list, tuple)) else beta_cfg[0])
+        if K >= N:
+            return 1.0
+        # P(X<=K) = I_{1-eps}(N-K, K+1) = beta
+        try:
+            x = betaincinv(N - K, K + 1, beta_val)
+            eps = 1.0 - float(x)
+        except Exception:
+            lo, hi = 0.0, 1.0
+            from scipy.special import betainc as _betainc
+            for _ in range(60):
+                mid = (lo + hi) / 2.0
+                val = _betainc(N - K, K + 1, 1.0 - mid)
+                if val > beta_val:
+                    hi = mid
+                else:
+                    lo = mid
+            eps = (lo + hi) / 2.0
+        return max(0.0, min(1.0, eps))
+    
+    def discard(self, state):
+        """
+        Discard support samples from the current dataset and update the scenario state.
+
+        This function removes samples that were identified as support points in the last iteration from the working dataset.
+        It updates the indices and data structures accordingly, preparing the state for the next iteration of the scenario approach.
+
+        Args:
+            state (dict): The current state dictionary containing support and discarded sample indices, and other scenario state.
+
+        Returns:
+            None
+
+        Raises:
+            ValueError: If no data is provided in the config.
+        """
         # Discard all samples that were of support for last run...
         # Could discard just the current worst case for better guarantees but worse performance
         # Could probably do this by just discarding last support sample...
-        
+        if not self.config.DATA:
+            raise ValueError("No data provided in config")
         traj_data = self.config.DATA["full_data"]
         if not self.config.CONVEX_NET:
             if len(state["discarded"]) == 0:
                 state["discarded"] = state["supps"]
-                self.remaining_inds = list(set(range(len(traj_data["states"])))-state["discarded"])
+                self.remaining_inds = list(set(range(len(traj_data["states"]))) - state["discarded"])
             else:
                 to_remove = set()
                 for new_disc in state["supps"]:
@@ -205,24 +265,40 @@ class SingleScenApp:
                 if len(to_remove) == len(self.remaining_inds):
                     print("removed all samples, maintaining final support samples")
                     return
-                self.remaining_inds=list(set(self.remaining_inds)-to_remove)
+                self.remaining_inds = list(set(self.remaining_inds) - to_remove)
             state["supps"] = set()
         new_traj_inds = [i for i in range(len(traj_data["states"])) if i not in state["discarded"]]
         new_traj_data = {}
         for key in traj_data:
             new_traj_data[key] = [traj_data[key][ind] for ind in new_traj_inds]
-        
+
         self.S, self.S_traj = self._initialise_data(new_traj_data, self.config.DATA["states_only"]) # Needs editing
-        
+
         state[ScenAppStateKeys.S] = self.S["states"]
         state[ScenAppStateKeys.S_dot] = self.S["derivs"]
         state[ScenAppStateKeys.S_traj] = self.S_traj["states"]
-        state[ScenAppStateKeys.S_traj_dot] =  self.S_traj["derivs"]
-        state[ScenAppStateKeys.S_inds] =  self.S["indices"]
+        state[ScenAppStateKeys.S_traj_dot] = self.S_traj["derivs"]
+        state[ScenAppStateKeys.S_inds] = self.S["indices"]
         state[ScenAppStateKeys.times] = self.S["times"]
         return
 
     def est_disc_gap(self, state):
+        """
+        Estimate the discretization gap (delta) for the scenario approach.
+
+        This function computes an upper bound on the discretization error between the continuous and discrete-time systems
+        using sampled trajectory data. It samples pairs of nearby points in the state space and evaluates the difference
+        in their gradients and next states, fitting an exponential Weibull distribution to the results to estimate Lipschitz constants.
+
+        Args:
+            state (dict): The current state dictionary containing trajectory data, neural network, and other scenario approach state.
+
+        Returns:
+            float: The estimated discretization gap (delta).
+
+        Raises:
+            ValueError: If the required domains or sufficient data are not available for estimation.
+        """
         # Would be better off adding this to the loss function, but this works OK.
         # Adding to loss function would likely be quite slow...
 
@@ -231,6 +307,9 @@ class SingleScenApp:
         next_data = np.hstack(state[ScenAppStateKeys.S_traj_dot])
         times = np.hstack(self.S_traj["times"])
 
+        if self.config.DOMAINS is None or "lie" not in self.config.DOMAINS:
+            raise ValueError("DOMAINS or 'lie' domain not available for gap estimation")
+        
         valid_inds = torch.where(self.config.DOMAINS["lie"].check_containment(torch.Tensor(state_data.T)))
         state_data = state_data[:,valid_inds[0]]
         next_data = next_data[:,valid_inds[0]]
@@ -245,15 +324,25 @@ class SingleScenApp:
         alpha = 0.1
         psi_f = []
         psi_v = []
+    
+        if len(inds) < 2:
+            raise ValueError("Not enough valid data points for gap estimation")
+            
         for i in range(M):
             max_s_f = 0
             max_s_v = 0
             for j in range(N):
-                poss_inds = [[]]
+                
+                ind = np.random.choice(inds)
+                x = state_data[:,[ind]]
+                poss_inds = np.where(np.linalg.norm(state_data-state_data[:,[ind]],axis=0)<alpha)
+                
+                
                 while len(poss_inds[0]) <= 1:
-                    ind  =np.random.choice(inds)
+                    ind = np.random.choice(inds)
                     x = state_data[:,[ind]]
                     poss_inds = np.where(np.linalg.norm(state_data-state_data[:,[ind]],axis=0)<alpha)
+                    
                 y_ind = ind
                 while y_ind == ind:
                     y_ind = np.random.choice(poss_inds[0])
@@ -283,18 +372,150 @@ class SingleScenApp:
         L_v = -L_v
         delta = (t_max)*M_f*(M_v*L_f+M_f*L_v)
         return delta
+        
+    def init_state(self, Sdot, S, S_traj, S_inds, times):
+        state = {
+                ScenAppStateKeys.net: self.learner,
+                ScenAppStateKeys.optimizer: self.optimizer,
+                ScenAppStateKeys.S: S,
+                ScenAppStateKeys.S_dot: Sdot,
+                ScenAppStateKeys.S_traj: S_traj["states"],
+                ScenAppStateKeys.S_traj_dot: S_traj["derivs"],
+                ScenAppStateKeys.S_inds: S_inds,
+                ScenAppStateKeys.times: times,
+                ScenAppStateKeys.V: None,
+                ScenAppStateKeys.V_dot: None,
+                ScenAppStateKeys.x_v_map: self.x_map,
+                ScenAppStateKeys.found: False,
+                ScenAppStateKeys.verification_timed_out: False,
+                ScenAppStateKeys.trajectory: None,
+                ScenAppStateKeys.ENet: self.config.ENET,
+                ScenAppStateKeys.best_loss: np.inf,
+                ScenAppStateKeys.best_net: None,
+                ScenAppStateKeys.discarded: set(),
+                ScenAppStateKeys.supps: set(),
+                ScenAppStateKeys.compression_set_size: 0,
+                ScenAppStateKeys.convex: self.config.CONVEX_NET,
+                ScenAppStateKeys.discrete: self.config.TIME_DOMAIN != TimeDomain.CONTINUOUS,
+                }
+
+        return state
+        
+    def print_verification_info(self, state, include_discarded=False):
+        """
+        Print epsilon and compression set size information.
+        
+        Args:
+            state: Current state dictionary containing bounds and support information
+            include_discarded: Whether to include discarded samples count in the output
+        """
+        print(f"A priori Epsilon: {state[ScenAppStateKeys.bounds]:.5f}")
+        
+        comp_size = self.calculate_compression_set_size(state)
+        total_samples = self.config.N_DATA
+            
+        if ScenAppStateKeys.compression_set_size in state and self.config.TRACK_COMPRESSION_SET:
+            if include_discarded:
+                print(f"Compression set size: {comp_size}/{total_samples} (discarded: {len(state['discarded'])})")
+            else:
+                print(f"Compression set size: {state[ScenAppStateKeys.compression_set_size]}/{total_samples}")
+                state["final_compression_set_size"] = state[ScenAppStateKeys.compression_set_size]
+        
+        if getattr(self.config, 'USE_APRIORI_JUMPS', False):
+            eps_mod = self.compute_modified_apriori_epsilon()
+            if eps_mod is not None:
+                print(f"Modified a priori Epsilon: {eps_mod:.5f}")
+
+    def process_timers(self, state: dict[str, Any]) -> dict[str, Any]:
+        state[ScenAppStateKeys.components_times] = [
+                self.learner.get_timer().sum,
+                self.verifier.get_timer().sum,
+                ]
+        print("Learner times: {}".format(self.learner.get_timer()))
+        scenapp_log.info("Verifier times: {}".format(self.verifier.get_timer()))
+        return state
+
+    def process_certificate(
+            self, S: dict[str, torch.Tensor], state: dict[str, Any], iters: int
+            ) -> bool:
+        stop = False
+        if (
+                self.config.CERTIFICATE == CertificateType.LYAPUNOV
+                or self.config.CERTIFICATE == CertificateType.ROA
+                ):
+            self.learner.beta = self.certificate.estimate_beta(self.learner)
+
+        #if isinstance(self.f, control.GeneralClosedLoopModel):
+        #    raise NotImplementedError("Can't do controlled models")
+        #    ctrl = " and controller"
+        #else:
+        ctrl = ""
+        loss_str = f" (final loss: {state['best_loss']:.6f})" if 'best_loss' in state else ""
+        print(f"Found a valid {self.config.CERTIFICATE.name} certificate{loss_str}" + ctrl)
+        stop = True
+        return stop
+    
+    def a_post_verify(self, cert, cert_deriv, n_data):
+        """
+        Perform a posteriori verification of the certificate on new test data.
+
+        This function generates new test trajectories from the 'init' or 'lie' domain, evaluates the certificate on them,
+        and computes the scenario approach risk bound (epsilon) based on the observed violations.
+
+        Args:
+            cert: The trained certificate neural network or function.
+            cert_deriv: The derivative of the certificate (e.g., neural network gradient).
+            n_data (int): Number of test samples to generate for verification.
+
+        Returns:
+            float: The computed scenario approach risk bound (epsilon).
+
+        Raises:
+            ValueError: If no data is provided in the config or required domains are missing.
+        """
+        if not self.config.DATA:
+            raise ValueError("No data provided in config")
+        state_data = self.config.DATA["states_only"]
+        torch.manual_seed(clock_gettime(0))      #allows different samples when running in parallel
+        try:
+            if self.config.DOMAINS is not None and "init" in self.config.DOMAINS:
+                test_data = self.config.DOMAINS["init"]._generate_data(n_data)()
+            else:
+                raise KeyError("init domain not found")
+        except KeyError:
+            if self.config.DOMAINS is not None and "lie" in self.config.DOMAINS:
+                test_data = self.config.DOMAINS["lie"]._generate_data(n_data)()
+            else:
+                raise ValueError("Neither 'init' nor 'lie' domains are available")
+
+        all_test_data = self.config.SYSTEM().generate_trajs(test_data)
+        data = {"states_only": None, "full_data": {"times":all_test_data[0],"states":all_test_data[1],"derivs":all_test_data[2]}}
+        num_violations, true_violations = self.certificate.get_violations(cert, cert_deriv, data["full_data"]["states"], data["full_data"]["derivs"], data["full_data"]["times"], state_data)
+        k = num_violations
+        k = true_violations # use this for direct property validation
+        N = n_data
+        beta_bar = self.config.BETA[0]/N
+        d = 1
+        eps = betaF.ppf(1-beta_bar, k+d, N-(d+k)+1) 
+        print("Direct Property scenario approach risk: {:.5f}".format(eps))
+        print("Certificate violation rate: {:.3f}".format(num_violations/n_data))
+        print("Property violation rate: {:.3f}".format(true_violations/n_data))
+
+        if hasattr(eps, 'item'):
+            return float(eps.item())
+        else:
+            return float(eps)
 
     def solve(self) -> Result:
         converge_tol = 1e-4
+        # print(f"[{self.__class__.__name__}] Problem type: {'Convex' if self.config.CONVEX_NET else 'Non-Convex'}")
         Sdot = self.S["derivs"]
         S = self.S["states"]
         S_inds = self.S["indices"]
         S_traj = self.S_traj
         times = self.S["times"]
-        # Initialize CEGIS state
         state = self.init_state(Sdot, S, S_traj, S_inds, times)
 
-        # Reset timers for components
         self.learner.get_timer().reset()
         state["net_dot"] = self.learner.nn_dot
         iters = 0
@@ -308,25 +529,26 @@ class SingleScenApp:
         else:
             state["supps"] = set()
         state["supp_len"] = self.a_priori_supps
+
         while not stop:
             scenapp_log.debug("\033[1m Learner \033[0m")
             outputs = self.learner.get(**state)
             state = {**state, **outputs}
             
             if self.config.CONVEX_NET:
-                state["supps"] = outputs["new_supps"]
+                state["supps"] = outputs.get("compression_set", outputs.get("new_supps", state["supps"]))
             else:
-                state["supps"] = state["supps"].union(outputs["new_supps"])
+                state["supps"] = state["supps"].union(outputs.get("compression_set", outputs.get("new_supps", set())))
             state = self.update_controller(state)
-            if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:
-                scenapp_log.debug("\033[1m Verifier \033[0m")
-                
 
+            if self.config.CONVEX_NET and torch.abs(state["loss"]-old_loss) < converge_tol:
+                
+                scenapp_log.debug("\033[1m Verifier \033[0m")
                 outputs = self.verifier.get(**state)
                 state = {**state, **outputs}
-                print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
                 stop = self.process_certificate(S, state, iters)
-
+                self.print_verification_info(state, include_discarded=True)
+                
             elif not self.config.CONVEX_NET and state["best_loss"] <= 0.0:
                 
                 if self.config.CALC_DISC_GAP:
@@ -342,23 +564,17 @@ class SingleScenApp:
                         scenapp_log.info("Required delta: {:.5f}".format(delta))
                         scenapp_log.info("Best loss: {:.5f}".format(state["best_loss"]))
                         scenapp_log.debug("\033[1m Verifier \033[0m")
-                        
-
                         outputs = self.verifier.get(**state)
                         state = {**state, **outputs}
-
-                        print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
                         stop = self.process_certificate(S, state, iters)
+                        self.print_verification_info(state)
 
                 else:
                     scenapp_log.debug("\033[1m Verifier \033[0m")
-                    
-
                     outputs = self.verifier.get(**state)
                     state = {**state, **outputs}
-
-                    print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
                     stop = self.process_certificate(S, state, iters)
+                    self.print_verification_info(state)
             
             elif state[ScenAppStateKeys.verification_timed_out]:
                 scenapp_log.warning("Verification timed out")
@@ -388,7 +604,7 @@ class SingleScenApp:
                 old_loss = state["loss"]
                 old_best = state["best_loss"]
                 scenapp_log.info("Iteration: {}".format(iters))
-            if type(old_best) is float:
+            if isinstance(old_best, (int, float)):
                 scenapp_log.info("Best loss: {:.10f}".format(old_best))
             else:
                 scenapp_log.info("Best loss: {:.10f}".format(old_best.item()))
@@ -400,64 +616,10 @@ class SingleScenApp:
                 )
         pre_post = perf_counter()
         a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
-        print("Direct property guarantee time: {:.5f}s".format(perf_counter()-pre_post))
+        print(f"Direct property guarantee time: {perf_counter()-pre_post:.5f}s")
         self._result = Result(state[ScenAppStateKeys.bounds], a_post_eps, state[ScenAppStateKeys.best_net], stats)
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result
-
-    def init_state(self, Sdot, S, S_traj, S_inds, times):
-        state = {
-                ScenAppStateKeys.net: self.learner,
-                ScenAppStateKeys.optimizer: self.optimizer,
-                ScenAppStateKeys.S: S,
-                ScenAppStateKeys.S_dot: Sdot,
-                ScenAppStateKeys.S_traj: S_traj["states"],
-                ScenAppStateKeys.S_traj_dot: S_traj["derivs"],
-                ScenAppStateKeys.S_inds: S_inds,
-                ScenAppStateKeys.times: times,
-                ScenAppStateKeys.V: None,
-                ScenAppStateKeys.V_dot: None,
-                ScenAppStateKeys.x_v_map: self.x_map,
-                ScenAppStateKeys.found: False,
-                ScenAppStateKeys.verification_timed_out: False,
-                ScenAppStateKeys.trajectory: None,
-                ScenAppStateKeys.ENet: self.config.ENET,
-                ScenAppStateKeys.best_loss: np.inf,
-                ScenAppStateKeys.best_net: None,
-                ScenAppStateKeys.discarded: set(),
-                ScenAppStateKeys.convex: self.config.CONVEX_NET,
-                ScenAppStateKeys.discrete: self.config.TIME_DOMAIN != TimeDomain.CONTINUOUS,
-                }
-
-        return state
-
-    def process_timers(self, state: dict[str, Any]) -> dict[str, Any]:
-        state[ScenAppStateKeys.components_times] = [
-                self.learner.get_timer().sum,
-                self.verifier.get_timer().sum,
-                ]
-        print("Learner times: {}".format(self.learner.get_timer()))
-        scenapp_log.info("Verifier times: {}".format(self.verifier.get_timer()))
-        return state
-
-    def process_certificate(
-            self, S: dict[str, torch.Tensor], state: dict[str, Any], iters: int
-            ) -> bool:
-        stop = False
-        if (
-                self.config.CERTIFICATE == CertificateType.LYAPUNOV
-                or self.config.CERTIFICATE == CertificateType.ROA
-                ):
-            self.learner.beta = self.certificate.estimate_beta(self.learner)
-
-        #if isinstance(self.f, control.GeneralClosedLoopModel):
-        #    raise NotImplementedError("Can't do controlled models")
-        #    ctrl = " and controller"
-        #else:
-        ctrl = ""
-        print(f"Found a valid {self.config.CERTIFICATE.name} certificate" + ctrl)
-        stop = True
-        return stop
 
     @property
     def result(self):
@@ -465,7 +627,7 @@ class SingleScenApp:
 
     def _assert_state(self):
         assert self.config.LEARNING_RATE > 0
-        assert self.config.CEGIS_MAX_TIME_S > 0
+        assert self.config.SCENAPP_MAX_TIME_S > 0
         if self.config.TIME_DOMAIN == TimeDomain.DISCRETE:
             assert self.config.CERTIFICATE in (
                 CertificateType.LYAPUNOV,
@@ -480,7 +642,9 @@ class DoubleScenApp(SingleScenApp):
 
     def __init__(self, config: ScenAppConfig):
         super().__init__(config)
-        self.lyap_learner, self.barr_learner = self.learner
+        learner_tuple = self._initialise_learner()
+        self.lyap_learner, self.barr_learner = learner_tuple
+        self.learner = learner_tuple
     
     def _initialise_certificate(self):
         custom_certificate = self.config.CUSTOM_CERTIFICATE
@@ -489,7 +653,7 @@ class DoubleScenApp(SingleScenApp):
             raise ValueError("DoubleScenApp only suppots RAR certificates")
         return cert_type(self.domains, self.config)
 
-    def _initialise_learner(self):
+    def _initialise_learner(self) -> Tuple[learner.LearnerNN, learner.LearnerNN]:  # type: ignore[override]
         learner_type = learner.get_learner(self.config.TIME_DOMAIN, self.config.CTRLAYER)
 
         lyap_learner = learner_type(
@@ -497,7 +661,7 @@ class DoubleScenApp(SingleScenApp):
             self.certificate.learn,
             *self.config.N_HIDDEN_NEURONS,
             activation=self.config.ACTIVATION,
-            bias=self.certificate.bias[0],
+            bias=self.certificate.bias,
             config=self.config,
                             )
         
@@ -506,7 +670,7 @@ class DoubleScenApp(SingleScenApp):
             self.certificate.learn,
             *self.config.N_HIDDEN_NEURONS_ALT,
             activation=self.config.ACTIVATION_ALT,
-            bias=self.certificate.bias[1],
+            bias=self.certificate.bias,
             config=self.config,
                             )
 
@@ -519,15 +683,16 @@ class DoubleScenApp(SingleScenApp):
         
         optimizer = torch.optim.AdamW(
                 chain(
-                    *(l.parameters() for l in self.learner),
+                    self.lyap_learner.parameters(),
+                    self.barr_learner.parameters(),
                     ),
                 lr=self.config.LEARNING_RATE,
                 )
         return optimizer
     
     def _initialise_verifier(self):
-        lyap_num_params = sum(p.numel() for p in self.learner[0].parameters() if p.requires_grad)
-        barr_num_params = sum(p.numel() for p in self.learner[1].parameters() if p.requires_grad)
+        lyap_num_params = sum(p.numel() for p in self.lyap_learner.parameters() if p.requires_grad)
+        barr_num_params = sum(p.numel() for p in self.barr_learner.parameters() if p.requires_grad)
         num_params = lyap_num_params + barr_num_params
 
         verifier_type = verifier.get_verifier_type(self.config.VERIFIER)
@@ -536,9 +701,43 @@ class DoubleScenApp(SingleScenApp):
                     self.config.BETA,
                     self.config.N_DATA,
                     num_params,
-                    self.config.VERBOSE,
                             )
         return verifier_instance
+        
+    def print_post_processing_results(self, state, iters, N_data, n_test_data):
+        """
+        Package all of the post-processing printing into one method.
+        This consolidates all the result printing that happens after a certificate is found.
+        
+        Args:
+            state: The current state dictionary containing all scenario approach state
+            iters: Number of iterations performed
+            N_data: Number of data points used for training
+            n_test_data: Number of data points for testing
+            
+        Returns:
+            float: The a posteriori epsilon value
+        """
+        # Print component times
+        print("Learner times: {}".format(self.lyap_learner.get_timer()))
+        scenapp_log.info("Verifier times: {}".format(self.verifier.get_timer()))
+        
+        # Calculate statistics
+        stats = Stats(
+                iters, N_data, state["components_times"], torch.initial_seed()
+                )
+        
+        # Perform a posteriori verification and print results
+        pre_post = perf_counter()
+        a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
+        post_time = perf_counter()-pre_post
+        print("Direct risk calculation time: {:.5f}s".format(post_time))
+        
+        # Print compression set size if available
+        if "final_compression_set_size" in state:
+            print(f"Final compression set size: {state['final_compression_set_size']}")
+            
+        return a_post_eps, stats
 
     def solve(self) -> Result:
         converge_tol = 1e-4
@@ -582,6 +781,10 @@ class DoubleScenApp(SingleScenApp):
                 state["supps"] = outputs["new_supps"]
             else:
                 state["supps"] = state["supps"].union(outputs["new_supps"])
+                
+            if "compression_set_size" in outputs and self.config.TRACK_COMPRESSION_SET:
+                state[ScenAppStateKeys.compression_set_size] = outputs["compression_set_size"]
+                
             state = self.update_controller(state)
 
             # Translator component
@@ -596,8 +799,8 @@ class DoubleScenApp(SingleScenApp):
                 #scenapp_log.debug("\033[1m Consolidator \033[0m")
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
-                print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
                 stop = self.process_certificate(S, state, iters)
+                self.print_verification_info(state)
 
             elif not self.config.CONVEX_NET and state["best_loss"] == 0.0:
                 scenapp_log.debug("\033[1m Verifier \033[0m")
@@ -610,8 +813,8 @@ class DoubleScenApp(SingleScenApp):
                 #scenapp_log.debug("\033[1m Consolidator \033[0m")
                 #outputs = self.consolidator.get(**state)
                 #state = {**state, **outputs}
-                print("Epsilon: {:.5f}".format(state[ScenAppStateKeys.bounds]))
                 stop = self.process_certificate(S, state, iters)
+                self.print_verification_info(state)
 
             elif state[ScenAppStateKeys.verification_timed_out]:
                 scenapp_log.warning("Verification timed out")
@@ -645,20 +848,25 @@ class DoubleScenApp(SingleScenApp):
 
         state = self.process_timers(state)
 
-        #N_data = sum([S_i.shape[0] for S_i in state[ScenAppStateKeys.S].values()])
-        stats = Stats(
-                iters, N_data, state["components_times"], torch.initial_seed()
-                )
-        pre_post = perf_counter()
-        a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
-        post_time = perf_counter()-pre_post
-        print("Direct risk calculation time: {:.5f}s".format(post_time))
+        # Use consolidated post-processing printing method if BARRIERALT certificate
+        if self.config.CERTIFICATE == CertificateType.BARRIERALT:
+            a_post_eps, stats = self.print_post_processing_results(state, iters, N_data, n_test_data)
+        else:
+            # Original post-processing code for other certificate types
+            stats = Stats(
+                    iters, N_data, state["components_times"], torch.initial_seed()
+                    )
+            pre_post = perf_counter()
+            a_post_eps = self.a_post_verify(state[ScenAppStateKeys.best_net], state[ScenAppStateKeys.best_net].nn_dot, n_test_data)
+            post_time = perf_counter()-pre_post
+            print("Direct risk calculation time: {:.5f}s".format(post_time))
+            
+            if "final_compression_set_size" in state:
+                print(f"Final compression set size: {state['final_compression_set_size']}")
+        
         self._result = Result(state[ScenAppStateKeys.bounds], a_post_eps, state[ScenAppStateKeys.best_net], stats)
                 #state[ScenAppStateKeys.net], state[ScenAppStateKeys.net_dot], n_test_data)
         return self._result
-
-
-
 
 class ScenApp:
     def __new__(cls, config: ScenAppConfig) -> Union[DoubleScenApp, SingleScenApp]:

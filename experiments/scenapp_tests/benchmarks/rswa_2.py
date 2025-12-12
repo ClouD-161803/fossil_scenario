@@ -10,7 +10,22 @@ from experiments.scenapp_tests.benchmarks import models
 from fossil import domains
 from fossil import certificate
 from fossil import main, control
-from fossil.consts import *
+from fossil.consts import (
+    ActivationType,
+    ScenAppConfig,
+    CertificateType,
+    TimeDomain,
+    VerifierType,
+)
+import random
+import numpy as np
+import torch
+
+# Set seed for reproducibility
+claudio_seed = 42
+random.seed(claudio_seed)
+np.random.seed(claudio_seed)
+torch.manual_seed(claudio_seed)
 
 
 def test_lnn(args):
@@ -23,10 +38,10 @@ def test_lnn(args):
 
     system = models.SecondOrderLQR
 
-    XD = domains.Rectangle([-1.5, -1.5], [1.5, 1.5])
-    XS = domains.Rectangle([-1, -1], [1, 1])
-    XI = domains.Rectangle([-0.5, -0.5], [0.5, 0.5])
-    XG = domains.Rectangle([-0.05, -0.05], [0.05, 0.05])
+    XD = domains.Rectangle(tuple([-1.5, -1.5]), tuple([1.5, 1.5]))
+    XS = domains.Rectangle(tuple([-1, -1]), tuple([1, 1]))
+    XI = domains.Rectangle(tuple([-0.5, -0.5]), tuple([0.5, 0.5]))
+    XG = domains.Rectangle(tuple([-0.05, -0.05]), tuple([0.05, 0.05]))
 
     SU = domains.SetMinus(XD, XS)  # Data for unsafe set
     SD = domains.SetMinus(XS, XG)  # Data for lie set
@@ -68,10 +83,11 @@ def test_lnn(args):
         CERTIFICATE=CertificateType.RSWS,
         TIME_DOMAIN=TimeDomain.CONTINUOUS,
         VERIFIER=VerifierType.SCENAPPNONCONVEX,
-        ACTIVATION=activations,
-        N_HIDDEN_NEURONS=n_hidden_neurons,
+        ACTIVATION=tuple(activations),
+        N_HIDDEN_NEURONS=(n_hidden_neurons[0],),
         SCENAPP_MAX_ITERS=1,
-        VERBOSE=2 
+        VERBOSE=2,
+        SEED=claudio_seed
     )
 
     main.run_benchmark(

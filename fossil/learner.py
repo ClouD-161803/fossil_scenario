@@ -3,7 +3,7 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import Callable, Literal
+from typing import Callable, Literal, Union, Optional, Any
 import warnings
 
 import numpy as np
@@ -16,6 +16,30 @@ from fossil.consts import *
 from fossil.utils import Timer, timer
 
 T = Timer()
+
+
+class CegisStateKeys:
+    x_v = "x_v"
+    x_v_dot = "x_v_dot"
+    x_v_map = "x_v_map"
+    S = "S"
+    S_dot = "S_dot"
+    B = "B"
+    B_dot = "B_dot"
+    optimizer = "optimizer"
+    V = "V"
+    V_dot = "V_dot"
+    cex = "cex"  # counterexamples
+    net = "net"
+    trajectory = "trajectory"
+    factors = "factors"
+    found = "found"
+    verification_timed_out = "verification_timed_out"
+    verifier_fun = "verifier_fun"
+    components_times = "components_times"
+    ENet = "ENet"
+    xdot = "xdot"
+    xdot_func = "xdot_func"
 
 
 class QuadraticFactor(nn.Module):
@@ -33,8 +57,16 @@ class Learner(Component):
     def get(self, **kw):
         return self.learn(**kw)
 
-    def learn(self, *args, **kwargs):
-        return NotImplemented("Not implemented in " + self.__class__.__name__)
+    def learn(self, *args, **kwargs) -> dict:
+        """Base learn method to be implemented by child classes.
+        
+        Returns:
+            dict: Learning results or state information
+        
+        Raises:
+            NotImplementedError: When called directly on the base class
+        """
+        raise NotImplementedError("Not implemented in " + self.__class__.__name__)
 
 
 class LearnerNN(nn.Module, Learner):
@@ -64,9 +96,9 @@ class LearnerNN(nn.Module, Learner):
 
         for n_hid in args:
             layer = nn.Linear(n_prev, n_hid, bias=bias)
-            self.register_parameter("W" + str(k), layer.weight)
+            setattr(self, "W" + str(k), layer.weight)
             if bias:
-                self.register_parameter("b" + str(k), layer.bias)
+                setattr(self, "b" + str(k), layer.bias)
             self.layers.append(layer)
             n_prev = n_hid
             k = k + 1
@@ -78,9 +110,9 @@ class LearnerNN(nn.Module, Learner):
             layer.weight = torch.nn.Parameter(torch.ones(layer.weight.shape))
             self.layers.append(layer)
         else:  # free output layer
-            self.register_parameter("W" + str(k), layer.weight)
+            setattr(self, "W" + str(k), layer.weight)
             if bias:
-                self.register_parameter("b" + str(k), layer.bias)
+                setattr(self, "b" + str(k), layer.bias)
             self.layers.append(layer)
         if config.LLO and not self.is_positive_definite():
             warnings.warn("LLO set but function is not positive definite")
@@ -99,12 +131,56 @@ class LearnerNN(nn.Module, Learner):
         times: dict,
         best_loss: float,
         best_net: "LearnerNN",
-        convex: bool
+        f_torch: Any = None,
+        discrete: bool = False,
+        compression_set: Optional[set] = None,
+        *,  # Keyword-only arguments after this
+        convex: bool = True  # Added convex as a separate parameter with default=True
     ) -> dict:
-        return self.learn_method(net, optimizer, S, Sdot, Sind, times, best_loss, best_net, None, convex)
+        """Learn method for the neural network.
+        
+        Args:
+            net: Neural network learner
+            optimizer: Optimization algorithm
+            S: Dictionary of sample data
+            Sdot: Dictionary of derivative data
+            Sind: Dictionary of indices
+            times: Dictionary of time data
+            best_loss: Current best loss value
+            best_net: Current best network
+            f_torch: Function for dynamic evaluation (used in control synthesis)
+            discrete: Whether system is discrete-time
+            compression_set: Optional set of compression samples
+            convex: Whether to use convex optimization approach (keyword-only)
+            
+        Returns:
+            dict: Results of learning process
+        """
+        if self.learn_method is None:
+            raise ValueError("Learning method is not defined")
+        
+        return self.learn_method(
+            net, optimizer, S, Sdot, Sind, times, best_loss, best_net, f_torch, discrete, compression_set
+        )
 
     def get(self, **kw):
-        return self.learn(
+        """Get method for the neural network.
+        
+        This method takes a dictionary of keyword arguments and passes them to the learn method.
+        It also handles updating the compression set size in the state.
+        
+        Args:
+            **kw: Keyword arguments including state information
+            
+        Returns:
+            dict: Results from the learn method
+        """
+        compression_set = kw.get(ScenAppStateKeys.supps, None)
+        f_torch = kw.get(ScenAppStateKeys.xdot_func, None)
+        discrete = kw.get(ScenAppStateKeys.discrete, False)
+        convex = kw.get('convex', True)  # Default to True if not provided
+        
+        result = self.learn(
             kw[ScenAppStateKeys.net],
             kw[ScenAppStateKeys.optimizer],
             kw[ScenAppStateKeys.S],
@@ -113,9 +189,20 @@ class LearnerNN(nn.Module, Learner):
             kw[ScenAppStateKeys.times],
             kw[ScenAppStateKeys.best_loss],
             kw[ScenAppStateKeys.best_net],
-            kw[ScenAppStateKeys.discrete]
-            # I think this could actually still pass xdot_func, since there's no pytorch parameters to learn
+            f_torch,
+            discrete,
+            compression_set=compression_set,  # Pass as keyword argument
+            convex=convex  # Pass as keyword argument
         )
+        
+        # Update compression set and size if present in result
+        if "compression_set" in result:
+            kw[ScenAppStateKeys.supps] = result["compression_set"]
+            kw[ScenAppStateKeys.compression_set_size] = result["compression_set_size"]
+        elif "compression_set_size" in result:
+            kw[ScenAppStateKeys.compression_set_size] = result["compression_set_size"]
+            
+        return result
 
     def make_final_layer_positive(self):
         """Makes the last layer of the neural network positive definite."""
@@ -123,12 +210,12 @@ class LearnerNN(nn.Module, Learner):
             self.layers[-1].weight.data = torch.abs(self.layers[-1].weight.data)
 
     def get_all(
-        self, S: torch.Tensor, Sdot: torch.Tensor
+        self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes the value of the learner, its lie derivative and the circle."""
         raise NotImplementedError
 
-    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor) -> torch.Tensor:
+    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None) -> torch.Tensor:
         raise NotImplementedError
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -223,9 +310,11 @@ class LearnerNN(nn.Module, Learner):
         if self.factor:
             return self.factor(S), self.factor.derivative(S)
         else:
-            return 1, 0
+            ones = torch.ones_like(S[:, 0])
+            zeros = torch.zeros_like(S[:, 0])
+            return ones, zeros
 
-    def compute_minimum(self, S: torch.Tensor) -> tuple[float, float]:
+    def compute_minimum(self, S: torch.Tensor) -> tuple[float, torch.Tensor]:
         """Computes the minimum of the learner over the input set.
 
         Also returns the argmin of the minimum.
@@ -234,16 +323,16 @@ class LearnerNN(nn.Module, Learner):
             S (torch.Tensor): _description_
 
         Returns:
-            tuple[float, float]: _description_
+            tuple[float, torch.Tensor]: _description_
         """
         C = self(S)
         minimum = torch.min(C, 0)
         value = minimum.values.item()
         index = minimum.indices.item()
-        argmin = S[index]
+        argmin = S[int(index)]
         return value, argmin
 
-    def compute_maximum(self, S: torch.Tensor) -> tuple[float, float]:
+    def compute_maximum(self, S: torch.Tensor) -> tuple[float, torch.Tensor]:
         """Computes the maximum of the learner over the input set.
 
         Also returns the argmax of the maximum.
@@ -252,13 +341,13 @@ class LearnerNN(nn.Module, Learner):
             S (torch.Tensor): _description_
 
         Returns:
-            tuple[float, float]: _description_
+            tuple[float, torch.Tensor]: _description_
         """
         C = self(S)
         maximum = torch.max(C, 0)
         value = maximum.values.item()
         index = maximum.indices.item()
-        argmax = S[index]
+        argmax = S[int(index)]
         return value, argmax
 
     def find_closest_unsat(self, S, Sdot):
@@ -337,7 +426,7 @@ class LearnerCT(LearnerNN):
     """
 
     def get_all(
-            self, S: torch.Tensor, Snext: torch.Tensor, times: torch.Tensor
+            self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns the value of the function, its lie derivative and circle.
 
@@ -357,7 +446,7 @@ class LearnerCT(LearnerNN):
         #assert len(S) == len(Sdot)
 
         nn = self(S)
-        nn_next = self(Snext)
+        nn_next = self(Sdot)
         V = nn
         Vdot = (nn_next-nn)/times
         #nn, grad_nn = self.compute_net_gradnet(S)
@@ -368,7 +457,7 @@ class LearnerCT(LearnerNN):
         #Vdot = self.compute_dV(gradV[:len(Sdot)], Sdot)
         return V, Vdot, circle
     
-    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: torch.Tensor) -> torch.Tensor:
+    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None) -> torch.Tensor:
         return self.get_all(S, Sdot, times)[1]
 
     def compute_dV(self, gradV: torch.Tensor, Sdot: torch.Tensor) -> torch.Tensor:
@@ -390,7 +479,7 @@ class LearnerDT(LearnerNN):
     """Leaner class for discrete time dynamical models."""
 
     def get_all(
-            self, S: torch.Tensor, Sdot: torch.Tensor, times: torch.Tensor,
+            self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes V, delta_V and circle.
 
@@ -420,7 +509,7 @@ class LearnerDT(LearnerNN):
 
         return V, delta_V, circle
     
-    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: torch.Tensor) -> torch.Tensor:
+    def nn_dot(self, S: torch.Tensor, Sdot: torch.Tensor, times: Optional[torch.Tensor] = None) -> torch.Tensor:
         return self.get_all(S, Sdot, times)[1] # Returns 1 step change
 
 
@@ -451,18 +540,79 @@ class CtrlLearnerCT(LearnerCT):
         #                                     activations=[ActivationType.LINEAR]*len(self.ctrl_layers))
 
     def get(self, **kw):
+        """Get method for control learners.
+        
+        Extracts necessary parameters from the keyword arguments dictionary
+        and passes them to the learn method.
+        
+        Args:
+            **kw: Keyword arguments including state information
+            
+        Returns:
+            dict: Results from the learn method
+        """
+        compression_set = kw.get(ScenAppStateKeys.supps, None)
+        
         return self.learn(
             kw[ScenAppStateKeys.net],
             kw[ScenAppStateKeys.optimizer],
             kw[ScenAppStateKeys.S],
             kw[ScenAppStateKeys.S_dot],
+            kw[ScenAppStateKeys.S_inds],
+            kw.get(ScenAppStateKeys.times, None),
+            kw.get(ScenAppStateKeys.best_loss, None),
+            kw.get(ScenAppStateKeys.best_net, None),
             kw[ScenAppStateKeys.xdot_func],
+            kw.get(ScenAppStateKeys.discrete, False),
+            compression_set,
+            convex=kw.get('convex', True)  # Pass as keyword argument
         )
 
     # backprop algo
     @timer(T)
-    def learn(self, net, optimizer, S, Sdot, xdot_func):
-        return self.learn_method(net, optimizer, S, Sdot, xdot_func)
+    def learn(
+        self,
+        net: "LearnerNN",
+        optimizer: torch.optim.Optimizer,
+        S: dict,
+        Sdot: dict,
+        Sind: dict,
+        times: Optional[dict] = None,
+        best_loss: Optional[float] = None,
+        best_net: Optional["LearnerNN"] = None,
+        f_torch: Any = None,
+        discrete: bool = False,
+        compression_set: Optional[set] = None,
+        *,  # Keyword-only arguments after this
+        convex: bool = True
+    ) -> dict:
+        """Learning method for control learners.
+        
+        This method aligns with the parent class signature while maintaining
+        compatibility with the control learning approach.
+        
+        Args:
+            net: Neural network learner
+            optimizer: Optimization algorithm
+            S: Dictionary of sample data
+            Sdot: Dictionary of derivative data
+            Sind: Dictionary of indices
+            times: Dictionary of time data (optional)
+            best_loss: Current best loss value (optional) 
+            best_net: Current best network (optional)
+            f_torch: Function for dynamic evaluation
+            discrete: Whether system is discrete-time
+            compression_set: Optional set of compression samples
+            convex: Whether to use convex optimization approach (keyword-only)
+            
+        Returns:
+            dict: Results of learning process
+        """
+        if self.learn_method is None:
+            raise ValueError("Learning method is not defined")
+        
+        # For backward compatibility, only pass the parameters expected by the original learn_method
+        return self.learn_method(net, optimizer, S, Sdot, Sind)
 
 
 class CtrlLearnerDT(LearnerDT):
@@ -491,21 +641,82 @@ class CtrlLearnerDT(LearnerDT):
         #                                     activations=[ActivationType.LINEAR]*len(self.ctrl_layers))
 
     def get(self, **kw):
+        """Get method for control learners.
+        
+        Extracts necessary parameters from the keyword arguments dictionary
+        and passes them to the learn method.
+        
+        Args:
+            **kw: Keyword arguments including state information
+            
+        Returns:
+            dict: Results from the learn method
+        """
+        compression_set = kw.get(ScenAppStateKeys.supps, None)
+        
         return self.learn(
             kw[CegisStateKeys.net],
             kw[CegisStateKeys.optimizer],
             kw[CegisStateKeys.S],
             kw[CegisStateKeys.S_dot],
+            None,  # No S_inds in CegisStateKeys
+            kw.get(ScenAppStateKeys.times, None),
+            kw.get(ScenAppStateKeys.best_loss, None),
+            kw.get(ScenAppStateKeys.best_net, None),
             kw[CegisStateKeys.xdot_func],
+            kw.get(ScenAppStateKeys.discrete, False),
+            compression_set,
+            convex=kw.get('convex', True)  # Pass as keyword argument
         )
 
     # backprop algo
     @timer(T)
-    def learn(self, net, optimizer, S, Sdot, xdot_func):
-        return self.learn_method(net, optimizer, S, Sdot, xdot_func)
+    def learn(
+        self,
+        net: "LearnerNN",
+        optimizer: torch.optim.Optimizer,
+        S: dict,
+        Sdot: dict,
+        Sind: Optional[dict] = None,
+        times: Optional[dict] = None,
+        best_loss: Optional[float] = None,
+        best_net: Optional["LearnerNN"] = None,
+        f_torch: Any = None,
+        discrete: bool = False,
+        compression_set: Optional[set] = None,
+        *,  # Keyword-only arguments after this
+        convex: bool = True
+    ) -> dict:
+        """Learning method for control learners.
+        
+        This method aligns with the parent class signature while maintaining
+        compatibility with the control learning approach.
+        
+        Args:
+            net: Neural network learner
+            optimizer: Optimization algorithm
+            S: Dictionary of sample data
+            Sdot: Dictionary of derivative data
+            Sind: Dictionary of indices (optional)
+            times: Dictionary of time data (optional)
+            best_loss: Current best loss value (optional) 
+            best_net: Current best network (optional)
+            f_torch: Function for dynamic evaluation
+            discrete: Whether system is discrete-time
+            compression_set: Optional set of compression samples
+            convex: Whether to use convex optimization approach (keyword-only)
+            
+        Returns:
+            dict: Results of learning process
+        """
+        if self.learn_method is None:
+            raise ValueError("Learning method is not defined")
+        
+        # For backward compatibility, only pass the parameters expected by the original learn_method
+        return self.learn_method(net, optimizer, S, Sdot, Sind)
 
 
-def get_learner(time_domain: Literal, ctrl: Literal) -> LearnerNN:
+def get_learner(time_domain: TimeDomain, ctrl: Optional[tuple] = None) -> type[LearnerNN]:
     if ctrl and time_domain == TimeDomain.CONTINUOUS:
         return CtrlLearnerCT
     elif ctrl and time_domain == TimeDomain.DISCRETE:
